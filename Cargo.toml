@@ -1,0 +1,11 @@
+[package]
+name = "tak"
+version = "0.1.0"
+authors = ["Tilman Schmidt <AccessKeymaster@gmx.net>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+read_input = "0.8"
+nom = "5"
