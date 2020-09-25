@@ -12,20 +12,18 @@ fn main() {
   let movement: Move = Move::Movement {
     start: Location::from_str("a7").expect("Invalid position string"),
     direction: Direction::Right,
-    carry: 4,
-    drop: vec![4]
+    drops: vec![1,3,2]
   };
   println!("{} {:?}", movement, movement);
 
-  let l = Location::from_coords(2, 6).unwrap();
-  println!("{:?}", l.x);
-  
-  // loop {
-  //   let loc: Location = input().msg("Input next move: ").get();
-  //   if loc.x == 0 && loc.y == 0 {
-  //     break;
-  //   }
+  loop {
+    let next_move: Move = input().msg("Input next move: ").get();
+    if let Move::Placement {kind: _, location} = &next_move {
+      if location.x == 0 && location.y == 0 {
+        break;
+      }
+    }
 
-  //   println!("{}, {:?}", loc, loc);
-  // }
+    println!("{}, {:?}", next_move, next_move);
+  }
 }
