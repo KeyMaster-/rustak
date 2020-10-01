@@ -1,0 +1,42 @@
+experiment with doing either of these two patterns:
+1.
+  if !next_step_valid { return }
+  do_next_step()
+
+  where do_next_step will panic if next_step_valid was false
+
+2. 
+  do_next_step().ok_or(Error)?
+
+  where do_next_step returns a value if the operation is valid, and None if not
+
+
+Examples this applies for so far:
+  StoneStack.take_stones
+
+  Grid[location]
+    Probably should be Grid.get(location) then, which will need a newtype over grid
+
+--
+. implement carry limit
+. test data processing binary
+  . Extract games data from playtak database
+  . parse & convert to game history struct (game size + list of moves + end result)
+    . this will need a game constructor for different sizes, unless I filter out anything not 5x5
+    . I can ignore end result for now
+  . serialize to file
+
+. test harness
+  . deserialize test histories from file
+  . Run through, verify that no move is ever invalid
+
+. need a utility parsing function file to include in parse.rs and in tests.rs
+
+. hand-written tests
+  . parse game state from string
+    reconstruct number of pieces left etc based on pieces placed
+
+. fuzz testing
+  . load test histories, randomly mutate moves
+    Issues: Can't know easily what error to expect.
+            Also might happen to mutate to another valid move.

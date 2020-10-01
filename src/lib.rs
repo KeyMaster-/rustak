@@ -1,46 +1,12 @@
 use std::fmt;
-use std::str::FromStr;
-use nom::{
-  IResult,
-  InputLength,
-  error::ParseError,
-  character::complete::one_of,
-  character::complete::anychar,
-  combinator::map,
-  combinator::map_opt,
-  combinator::opt,
-  combinator::all_consuming,
-  combinator::verify,
-  sequence::pair,
-  sequence::tuple,
-  branch::alt,
-  multi::many1
-};
+use grid::Grid;
+use az::CheckedAs;
 
-fn finalise<I, O, EI: ParseError<I>, E, F>(f: F) -> impl Fn(I) -> Result<O, E>
-where 
-  I: InputLength,
-  E: std::convert::From<nom::Err<EI>>,
-  F: Fn(I) -> IResult<I, O, EI> + Copy // Not sure about the copy here, but it's required to move f into all_consuming
-{
-  move |input: I| {
-    let (_, res) = all_consuming(f)(input)?;
-    Ok(res)
-  }
-}
+mod parse;
+pub mod utils;
 
-fn finalise_ignorant<I, O, EI: ParseError<I>, F>(f: F) -> impl Fn(I) -> Result<O, ()>
-where
-  I: InputLength,
-  F: Fn(I) -> IResult<I, O, EI> + Copy
-{
-  move |input: I| {
-    all_consuming(f)(input).map_or(Err(()), |(_, res)| Ok(res))
-  }
-}
-
-
-const MAX_BOARD_SIZE: u8 = 8;
+const MIN_BOARD_SIZE: usize = 3;
+const MAX_BOARD_SIZE: usize = 8;
 const FILE_CHARS: &str = "abcdefgh";
 const RANK_CHARS: &str = "12345678";
 
@@ -48,11 +14,546 @@ const RANK_CHARS: &str = "12345678";
 // x is the file, i.e. the lettered direction
 // y is the rank, i.e. the numbered direction
 // note that x and y are 0-indexed, while ranks are 1-indexed
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Location {
-  pub x: u8, 
-  pub y: u8
+  x: usize,
+  y: usize
 }
+
+impl Location {
+  pub fn from_coords(x: usize, y: usize) -> Option<Self> {
+    if x < MAX_BOARD_SIZE && y < MAX_BOARD_SIZE {
+      Some(Self { x, y })
+    } else {
+      None
+    }
+  }
+
+  pub fn move_along(&self, dir: Direction, board_size: usize) -> Option<Location> {
+    use Direction::*;
+    match dir {
+      Left  => if self.x == 0              { None } else { Some(Location { x: self.x - 1, y: self.y }) },
+      Right => if self.x == board_size - 1 { None } else { Some(Location { x: self.x + 1, y: self.y }) },
+      Up    => if self.y == board_size - 1 { None } else { Some(Location { x: self.x, y: self.y + 1 }) },
+      Down  => if self.y == 0              { None } else { Some(Location { x: self.x, y: self.y - 1 }) }
+    }
+  }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum StoneKind {
+  FlatStone,
+  StandingStone,
+  Capstone
+}
+
+impl StoneKind {
+  fn can_move_onto(self, other: StoneKind) -> bool {
+    match other {
+      StoneKind::FlatStone => true,
+      StoneKind::StandingStone => self == StoneKind::Capstone,
+      StoneKind::Capstone => false
+    }
+  }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Direction {
+  Up,
+  Down,
+  Left,
+  Right
+}
+
+#[derive(Debug)]
+pub enum Move {
+  Placement { kind: StoneKind, location: Location },
+  Movement { start: Location, direction: Direction, drops: Vec<usize> }
+}
+
+pub struct ColorMove {
+  color: Color,
+  r#move: Move
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Color {
+  White,
+  Black
+}
+
+impl Color {
+  fn opposite(&self) -> Color {
+    match self {
+      Color::White => Color::Black,
+      Color::Black => Color::White
+    }
+  }
+
+  fn swap(&mut self) {
+    *self = self.opposite();
+  }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Stone {
+  kind: StoneKind,
+  color: Color
+}
+
+impl Stone {
+  pub fn new(kind: StoneKind, color: Color) -> Self {
+    Self { kind, color }
+  }
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct StoneStack(Vec<Stone>);
+
+pub enum StoneStackConstructionError {
+  NoStones,
+  IllegalSequence
+}
+
+impl StoneStack {
+
+  pub fn single(stone: Stone) -> Self {
+    Self(vec![stone])
+  }
+
+  pub fn multiple(stones: Vec<Stone>) -> Result<Self, StoneStackConstructionError> {
+    use StoneStackConstructionError::*;
+
+    if stones.len() == 0 {
+      return Err(NoStones);
+    } 
+
+    for (i, stone) in stones.iter().enumerate() {
+      if i != stones.len() - 1 {
+        if stone.kind != StoneKind::FlatStone {
+          return Err(IllegalSequence); // invalid stack composition
+        }
+      }
+    }
+    Ok(Self(stones))
+  }
+
+  fn count(&self) -> usize {
+    self.0.len()
+  }
+
+  fn take(&mut self, count: usize) -> Result<StoneStack, ()> { // TODO error type. Too many or too few
+    if count == 0 || count >= self.count() { return Err(()) }
+    Ok(StoneStack(self.0.split_off(self.count() - count)))
+  }
+
+  fn drop_split(mut self, count: usize) -> (StoneStack, Option<StoneStack>) {
+    if count == 0 {
+      panic!("Can't drop 0 stones from a stack.");
+    }
+    // TODO need to check for count == 0 here, otherwise bottom stone stack has 0 elements
+    let top_stones = self.0.split_off(count);
+    let top_stack = if top_stones.len() != 0 { Some(Self(top_stones)) } else { None };
+    (self, top_stack)
+  }
+
+  fn top_stone(&self) -> Stone {
+    *self.0.last().unwrap()
+  }
+
+  fn bot_stone(&self) -> Stone {
+    *self.0.first().unwrap()
+  }
+
+  fn controlling_color(&self) -> Color {
+    self.top_stone().color
+  }
+
+  fn add_stack(&mut self, mut stones: StoneStack) -> Result<(), ()> { // TODO error type
+    if stones.bot_stone().kind.can_move_onto(self.top_stone().kind) {
+        // flatten standing stone
+      if let StoneKind::StandingStone = self.top_stone().kind {
+        self.0.last_mut().unwrap().kind = StoneKind::FlatStone;
+      }
+
+      self.0.append(&mut stones.0);
+      Ok(())
+    } else {
+      Err(())
+    }
+  }
+
+  fn iter(&self) -> std::slice::Iter<Stone> {
+    self.0.iter()
+  }
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct BoardSpace(Option<StoneStack>);
+
+impl BoardSpace {
+  fn place(&mut self, stone: Stone) -> Result<(), ()> { // TODO error type
+    if self.0.is_some() { return Err(()) }
+    self.0.replace(StoneStack::single(stone));
+    Ok(())
+  }
+
+  // TODO naming
+  fn drop_add(&mut self, stack: StoneStack) -> Result<(), ()> { // TODO error type
+    if let Some(existing) = &mut self.0 {
+      existing.add_stack(stack)
+    } else {
+      self.0.replace(stack);
+      Ok(())
+    }
+  }
+
+  fn take(&mut self, count: usize) -> Result<StoneStack, ()> { // todo add error type here
+    if count == 0 { return Err(()) }
+    if let Some(stack) = &mut self.0 {
+      if stack.count() == count {
+        Ok(self.0.take().unwrap())
+      } else {
+        stack.take(count)
+      }
+    } else {
+      Err(())
+    }
+  }
+
+  fn controlling_color(&self) -> Option<Color> {
+    self.0.as_ref().map(StoneStack::controlling_color)
+  }
+
+}
+
+// The actual state on the board
+#[derive(Debug, Eq, PartialEq, Clone)]
+struct Board {
+  spaces: Grid<BoardSpace>,
+  size: usize
+}
+
+impl Board {
+  fn new(size: usize) -> Option<Self> {
+    if MIN_BOARD_SIZE <= size && size <= MAX_BOARD_SIZE {
+      Some(Self {
+        spaces: Grid::new(size, size),
+        size
+      })
+    } else {
+      None
+    }
+  }
+
+  fn from_data(stacks: Vec<Option<StoneStack>>, size: usize) -> Option<Self> {
+    if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE || stacks.len() != size * size {
+      return None;
+    }
+
+    let spaces: Vec<_> = stacks.into_iter().map(|stack_opt| BoardSpace(stack_opt)).collect();
+
+    Some(Self {
+      spaces: Grid::from_vec(spaces, size),
+      size
+    })
+  }
+}
+
+impl<T: Clone> core::ops::Index<Location> for Grid<T> {
+  type Output = T;
+  fn index(&self, loc: Location) -> &Self::Output {
+    &self[loc.y][loc.x]
+  }
+}
+
+impl<T: Clone> core::ops::IndexMut<Location> for Grid<T> {
+  fn index_mut(&mut self, loc: Location) -> &mut Self::Output {
+    &mut self[loc.y][loc.x]
+  }
+}
+
+#[derive(Debug)]
+pub enum MoveInvalidReason {
+  FirstMoveNotPlacement,
+  Placement(PlacementInvalidReason),
+  Movement(MovementInvalidReason)
+}
+
+impl From<PlacementInvalidReason> for MoveInvalidReason {
+  fn from(reason: PlacementInvalidReason) -> Self {
+    MoveInvalidReason::Placement(reason)
+  }
+}
+
+impl From<MovementInvalidReason> for MoveInvalidReason {
+  fn from(reason: MovementInvalidReason) -> Self {
+    MoveInvalidReason::Movement(reason)
+  }
+}
+
+#[derive(Debug)]
+pub enum PlacementInvalidReason {
+  NoStoneAvailable,
+  KindNotValid,
+  LocationOutsideBoard,
+  SpaceOccupied,
+  StoneNotAvailable
+}
+
+#[derive(Debug)]
+pub enum MovementInvalidReason {
+  StartOutsideBoard,
+  SpaceEmpty,
+  StartNotControlled,
+  PickupTooLarge,
+  MoveOutsideBoard,
+  DropNotAllowed,
+}
+
+impl Board {
+  fn loc_inside(&self, loc: &Location)->bool {
+    loc.x < self.size && loc.y < self.size
+  }
+
+  fn make_move(&mut self, m: &ColorMove)->Result<(), MoveInvalidReason> {
+    let ColorMove { color, r#move: m } = m;
+
+    match m {
+      Move::Placement { kind, location } => {
+        use PlacementInvalidReason::*;
+
+        if !self.loc_inside(location) { return Err(LocationOutsideBoard.into()) }
+        let space = &mut self.spaces[*location];
+        space.place(Stone { kind: *kind, color: *color }).map_err(|_| SpaceOccupied.into()) // TODO move error type up into place function
+      },
+      Move::Movement { start, direction, drops } => {
+        use MovementInvalidReason::*;
+
+        if !self.loc_inside(start) { return Err(StartOutsideBoard.into()) }
+        let space = &mut self.spaces[*start];
+        match space.controlling_color() {
+          None => return Err(SpaceEmpty.into()),
+          Some(controlling_color) => if *color != controlling_color { return Err(StartNotControlled.into()) }
+        }
+
+        let pickup_count = drops.iter().sum();
+        let mut carry_stack_opt = Some(space.take(pickup_count).map_err(|_| MoveInvalidReason::from(PickupTooLarge))?);
+
+        let mut drop_loc = start.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
+        for &drop_count in drops {
+          let target_space = &mut self.spaces[drop_loc];
+          // the carry_stack_opt + take is necessary so that we never move that variable. For the current borrow checker, it needs to stay valid for the entirety for the loop.
+          let carry_stack = carry_stack_opt.take().unwrap(); // we already know we have enough stones in our stack to cover the total amount, so this is safe
+
+          let (drop_stack, new_carry_stack_opt) = carry_stack.drop_split(drop_count);
+          target_space.drop_add(drop_stack).map_err(|_| MoveInvalidReason::from(DropNotAllowed))?;
+
+          carry_stack_opt = new_carry_stack_opt; // destructuring doesn't allow assignment to existing bindings, so we need an intermediate here
+
+          drop_loc = drop_loc.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
+        }
+
+        Ok(())
+      }
+    }
+  }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct HeldStones {
+  flat: u8,
+  capstone: u8
+}
+
+impl HeldStones {
+  fn for_size(size: usize) -> Option<Self> {
+    match size {
+      3 => Some(Self { flat: 10, capstone: 0}),
+      4 => Some(Self { flat: 15, capstone: 0}),
+      5 => Some(Self { flat: 21, capstone: 1}),
+      6 => Some(Self { flat: 30, capstone: 1}),
+      7 => Some(Self { flat: 40, capstone: 1}),
+      8 => Some(Self { flat: 50, capstone: 2}),
+      _ => None
+    }
+  }
+
+  fn take_stone(&mut self, kind: StoneKind) -> bool {
+    match kind {
+      StoneKind::FlatStone | StoneKind::StandingStone => {
+        if self.flat > 0 {
+          self.flat -= 1;
+          return true;
+        } else {
+          return false;
+        }
+      },
+      StoneKind::Capstone => {
+        if self.capstone > 0 {
+          self.capstone -= 1;
+          return true;
+        } else {
+          return false;
+        }
+      }
+    }
+  }
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+struct GameHeldStones {
+  white: HeldStones,
+  black: HeldStones
+}
+
+impl GameHeldStones {
+  fn new(held_stones: HeldStones) -> Self {
+    Self {
+      white: held_stones,
+      black: held_stones
+    }
+  }
+
+  fn take_stone(&mut self, kind: StoneKind, color: Color) -> bool {
+    match color {
+      Color::White => self.white.take_stone(kind),
+      Color::Black => self.black.take_stone(kind),
+    }
+  }
+}
+
+// The state of a game
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct Game {
+  board: Board,
+  held_stones: GameHeldStones,
+  moves: u32
+}
+
+#[derive(Debug)]
+pub enum GameFromDataError {
+  InvalidSize,
+  TooManyPiecesForSize
+}
+
+impl Game {
+  pub fn new() -> Self {
+    Self {
+      board: Board::new(5).unwrap(),
+      held_stones: GameHeldStones::new(HeldStones { flat: 21, capstone: 1}),
+      moves: 0
+    }
+  }
+
+  pub fn from_data(stacks: Vec<Option<StoneStack>>, moves: u32) -> Result<Self, GameFromDataError> {
+    let size = (stacks.len() as f64).sqrt().checked_as::<usize>().ok_or(GameFromDataError::InvalidSize)?;
+    if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE { return Err(GameFromDataError::InvalidSize); }
+
+    let stack_count_stones = |stack: &StoneStack, filter_color| {
+      stack.iter().fold((0,0), |(flats, caps), stone| {
+        if stone.color == filter_color {
+          if stone.kind == StoneKind::Capstone {
+            (flats, caps+1)
+          } else {
+            (flats+1, caps)
+          }
+        } else {
+          (flats, caps)
+        }
+      })
+    };
+
+    let count_stones = |stacks: &Vec<Option<StoneStack>>, color| {
+      stacks.iter().filter_map(|stack_opt| stack_opt.as_ref()).fold((0, 0), 
+            |(flats, caps), stack| {
+              let (add_flats, add_caps) = stack_count_stones(stack, color);
+              (flats + add_flats, caps + add_caps)
+            })
+    };
+    
+    let (white_flats, white_caps) = count_stones(&stacks, Color::White);
+    let (black_flats, black_caps) = count_stones(&stacks, Color::Black);
+
+    let full_held_stones = HeldStones::for_size(size).unwrap();
+    if white_flats > full_held_stones.flat || white_caps > full_held_stones.capstone ||
+       black_flats > full_held_stones.flat || black_caps > full_held_stones.capstone {
+        return Err(GameFromDataError::TooManyPiecesForSize);
+    }
+
+    let white_held_stones = HeldStones {
+      flat: full_held_stones.flat - white_flats,
+      capstone: full_held_stones.capstone - white_caps
+    };
+
+    let black_held_stones = HeldStones {
+      flat: full_held_stones.flat - black_flats,
+      capstone: full_held_stones.capstone - black_caps
+    };
+
+    let held_stones = GameHeldStones {
+      white: white_held_stones,
+      black: black_held_stones
+    };
+
+    Ok(Self {
+      board: Board::from_data(stacks, size).unwrap(),
+      held_stones,
+      moves
+    })
+  }
+
+  pub fn make_move(&mut self, m: Move) -> Result<(), MoveInvalidReason> {
+    let mut game_clone = self.clone();
+
+    game_clone.internal_make_move(m)?;
+
+    // If we got here, the move was okay and applied to the cloned game.
+    // So write the changes back to ourselves.
+    *self = game_clone;
+    Ok(())
+  }
+
+  fn internal_make_move(&mut self, m: Move) -> Result<(), MoveInvalidReason> {
+    let mut move_color = self.get_active_color();
+
+    if self.get_turn() == 1 {
+        if let Move::Placement { kind, ..} = m {
+          if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::KindNotValid.into()) }
+        } else {
+          return Err(MoveInvalidReason::FirstMoveNotPlacement)
+        }
+        
+        move_color.swap();
+      }
+
+    if let Move::Placement { kind, .. } = m {
+      if !self.held_stones.take_stone(kind, move_color) {
+        return Err(PlacementInvalidReason::NoStoneAvailable.into());
+      }
+    }
+
+    self.board.make_move(&ColorMove { r#move: m, color: move_color } )?;
+
+    self.moves += 1;
+    Ok(())
+  }
+
+  fn get_turn(&self) -> u32 {
+    self.moves / 2 + 1
+  }
+
+  fn get_active_color(&self) -> Color {
+    match self.moves % 2 {
+      0 => Color::White,
+      1 => Color::Black,
+      _ => unreachable!()
+    }
+  }
+
+}
+
+// Display impls
 
 impl fmt::Display for Location {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -65,38 +566,6 @@ impl fmt::Display for Location {
   }
 }
 
-impl Location {
-  pub fn from_coords(x: u8, y: u8) -> Option<Self> {
-    if x < MAX_BOARD_SIZE && y < MAX_BOARD_SIZE {
-      Some(Self { x, y })
-    } else {
-      None
-    }
-  }
-}
-
-impl Location {
-  fn parse(i: &str) -> IResult<&str, Location> {
-    map(pair(one_of(FILE_CHARS), one_of(RANK_CHARS)), 
-      |(file, rank)| Location { x: FILE_CHARS.find(file).unwrap() as u8, y: RANK_CHARS.find(rank).unwrap() as u8 }) (i)
-  }
-}
-
-impl FromStr for Location {
-  type Err = ();
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    finalise_ignorant(Location::parse)(s)
-  }
-}
-
-#[derive(Debug)]
-pub enum StoneKind {
-  FlatStone,
-  StandingStone,
-  Capstone
-}
-
 impl fmt::Display for StoneKind {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "{}", match self {
@@ -107,31 +576,13 @@ impl fmt::Display for StoneKind {
   }
 }
 
-impl StoneKind {
-  fn parse(i: &str) -> IResult<&str, StoneKind> {
-    map(one_of("FSC"), |c| match c {
-      'F' => StoneKind::FlatStone,
-      'S' => StoneKind::StandingStone,
-      'C' => StoneKind::Capstone,
-      _ => unreachable!()
-    })(i)
+impl fmt::Display for Color {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", match self {
+      Color::White => "White",
+      Color::Black => "Black",
+    })
   }
-}
-
-impl FromStr for StoneKind {
-  type Err = ();
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    finalise_ignorant(StoneKind::parse)(s)
-  }
-}
-
-#[derive(Debug)]
-pub enum Direction {
-  Up,
-  Down,
-  Left,
-  Right
 }
 
 impl fmt::Display for Direction {
@@ -145,32 +596,6 @@ impl fmt::Display for Direction {
   }
 }
 
-impl Direction {
-  fn parse(i: &str) -> IResult<&str, Direction> {
-    map(one_of("+-<>"), |c| match c {
-      '+' => Direction::Up,
-      '-' => Direction::Down,
-      '<' => Direction::Left,
-      '>' => Direction::Right,
-      _ => unreachable!()
-    })(i)
-  }
-}
-
-impl FromStr for Direction {
-  type Err = ();
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    finalise_ignorant(Direction::parse)(s)
-  }
-}
-
-#[derive(Debug)]
-pub enum Move {
-  Placement { kind: StoneKind, location: Location,  },
-  Movement { start: Location, direction: Direction, drops: Vec<u8>}
-}
-
 impl fmt::Display for Move {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
@@ -182,7 +607,7 @@ impl fmt::Display for Move {
         write!(f, "{}{}", stone_ident, location)
       },
       Move::Movement { start, direction, drops } => {
-        let pickup: u8 = drops.iter().sum();
+        let pickup: usize = drops.iter().sum();
 
         let omit_pickup = pickup == 1;
         let pickup_text = 
@@ -206,44 +631,125 @@ impl fmt::Display for Move {
   }
 }
 
-fn take_digit(i: &str) -> IResult<&str, u8> {
-  map(verify(anychar, char::is_ascii_digit), |c| c.to_digit(10).unwrap() as u8) (i)
-}
+use colored::*;
+// const STONE_CHARS: [char; 3] = ['ロ', 'ー', 'ト'];
+const STONE_CHARS: [char; 3] = ['f', 's', 'c'];
 
-impl Move {
-  fn parse(i: &str) -> IResult<&str, Move> {
-    let parse_placement = map(
-      pair(opt(StoneKind::parse), Location::parse),
-      |(kind, location)| Move::Placement { kind: kind.unwrap_or(StoneKind::FlatStone), location: location,  });
+impl Stone {
+  fn to_colored_string(&self) -> ColoredString {
+    let c = match self.kind {
+      StoneKind::FlatStone => STONE_CHARS[0],
+      StoneKind::StandingStone => STONE_CHARS[1],
+      StoneKind::Capstone => STONE_CHARS[2]
+    }.to_string();
 
-      // apply defaults for omitted values, then verify that pickup and sum of drops match
-    let normalize_piece_amounts = |(pickup, location, direction, drops): (Option<u8>, _, _, Option<Vec<u8>>)| {
-      let pickup = pickup.unwrap_or(1);
-      let drops = drops.unwrap_or(vec![pickup]);
-      
-      if pickup == drops.iter().sum() {
-        Some((location, direction, drops))
-      } else {
-        None
-      }
-    };
-
-    let parse_movement = map(
-      map_opt(tuple((opt(take_digit), Location::parse, Direction::parse, opt(many1(take_digit)))), normalize_piece_amounts),
-      |(location, direction, drops)| Move::Movement { start: location, direction, drops }
-    );
-
-      // The order of these is important. 
-      // A movement with no leading number starts with a location, which can be parsed as a complete placement.
-      // So we need to first try to greedily parse the potentially longer movement, and then fall back to placement if that fails.
-    alt((parse_movement, parse_placement))(i)
+    match self.color {
+      Color::White => c.black().on_white(),
+      Color::Black => c.white().on_black()
+    }
   }
 }
 
-impl FromStr for Move {
-  type Err = ();
+impl fmt::Display for StoneStack {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    for stone in &self.0 {
+      write!(f, "{}", stone.to_colored_string())?;
+    }
+    Ok(())
+  }
+}
 
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    finalise_ignorant(Move::parse)(s)
+impl fmt::Display for BoardSpace {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if let Some(stack) = &self.0 {
+      write!(f, "{}", stack)
+    } else {
+      write!(f, " ")
+    }
+  }
+}
+
+fn repeat_char(c: char, count: usize) -> String {
+  (0..count).map(|_| c).collect()
+}
+
+fn stone_string_width(s: &String) -> usize {
+  s.chars().filter(|c| *c == ' ' || STONE_CHARS.contains(c)).count()
+}
+
+fn pad_stone_string(s: &mut String, width: usize) {
+  let s_width = stone_string_width(s);
+  if s_width >= width {
+    return;
+  }
+
+  let add_width = width - s_width;
+  let left = add_width / 2;
+  let right = add_width - left;
+
+  *s = format!("{}{}{}", repeat_char(' ', left), s, repeat_char(' ', right))
+}
+
+impl fmt::Display for Board {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let mut space_strings = Grid::from_vec(self.spaces.iter().map(|space| space.to_string()).collect(), self.size);
+    let col_widths: Vec<usize> = (0..self.size).map(|col_idx| space_strings.iter_col(col_idx).map(stone_string_width).max().unwrap()).collect();
+
+    for row_idx in 0..self.size {
+      for (col_idx, space_string) in space_strings.iter_row_mut(row_idx).enumerate() {
+        pad_stone_string(space_string, col_widths[col_idx]);
+      }
+    }
+
+    let row_strings = 
+      (0..self.size)
+      .map(|row_idx| space_strings.iter_row(row_idx).cloned().collect::<Vec<String>>().join(" ┃ "))
+      .enumerate()
+      .map(|(row_idx, row_str)| format!("{} ┃ {} ┃", row_idx + 1, row_str))
+      .rev();
+
+    let cell_separators: Vec<_> = col_widths.iter().map(|&width| repeat_char('━', width)).collect();
+
+    let start_row     = format!("  ┏━{}━┓", cell_separators.join("━┳━"));
+    let separator_row = format!("  ┣━{}━┫", cell_separators.join("━╋━"));
+    let end_row       = format!("  ┗━{}━┛", cell_separators.join("━┻━"));
+
+    let file_cells: Vec<_> = 
+      col_widths.iter()
+      .zip((0..self.size).map(|col_idx| FILE_CHARS.chars().nth(col_idx).unwrap()))
+      .map(|(&width, file_char)| format!("{:^width$}", file_char, width = width))
+      .collect();
+
+    let files_row = format!("    {}  ", file_cells.join("   "));
+
+    writeln!(f, "{}", start_row)?;
+    let mut first = true;
+    for row_string in row_strings {
+      if !first {
+        writeln!(f, "{}", separator_row)?;
+      } else {
+        first = false;
+      }
+
+      writeln!(f, "{}", row_string)?;
+    }
+    writeln!(f, "{}", end_row)?;
+    writeln!(f, "{}", files_row)?;
+
+    Ok(())
+  }
+}
+
+
+impl fmt::Display for Game {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}", self.board)?;
+    write!(f, "Turn {}, {} | W: {}F {}C, B: {}F {}C", 
+      self.get_turn(),
+      self.get_active_color(),
+      self.held_stones.white.flat, 
+      self.held_stones.white.capstone, 
+      self.held_stones.black.flat, 
+      self.held_stones.black.capstone)
   }
 }
