@@ -22,9 +22,6 @@ Examples this applies for so far:
 x need a utility parsing function file to include in parse.rs and in tests.rs
 x Allow StoneStack to be empty, get rid of boardspace etc as a result.
   Try this on a branch, see if it actually improves code structure.
-. Add bounded integer crate and use it for size and position values
-  This should remove some range checks at construction time, e.g. for board size.
-  This won't get around checking location-in-board cases, I don't want to tie the location type to board size.
 . Better error types in test parsing functions.
   Need to handle nom errors (with input location context and custom context strings)
   as well as object construction errors.
@@ -32,7 +29,9 @@ x Allow StoneStack to be empty, get rid of boardspace etc as a result.
     I think as a parse tree fails upwards, it accumulates errors.
 . Add error context to appropriate places in the test parsers.
 . Better error types for game types (see todos)
-
+. Add bounded integer crate and use it for size and position values
+  This should remove some range checks at construction time, e.g. for board size.
+  This won't get around checking location-in-board cases, I don't want to tie the location type to board size.
 
 # Rules
 x implement carry limit
@@ -41,7 +40,6 @@ x implement carry limit
   . road
   . space cover
   . run out of pieces
-
 
 # Testing
 . hand-written tests
@@ -64,3 +62,27 @@ x implement carry limit
   . load test histories, randomly mutate moves
     Issues: Can't know easily what error to expect.
             Also might happen to mutate to another valid move.
+
+---
+# Tests to add
+
+First round
+  . Place non-flat on first round
+  . Move on first round
+
+Placement
+  . Place into non-empty space
+
+Movement
+  Pickup
+    . Pick up more than in stack
+    . Move above carry limit
+
+  Drops
+    . Move on top of standing stone without flattening (flat, other standing)
+    . Move on top of standing stone with flattening (capstone onto standing)
+    . Move on top of capstone
+
+  Locations
+    . Start move outside board
+    . Move out of board
