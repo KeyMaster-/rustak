@@ -20,7 +20,7 @@ Examples this applies for so far:
 --
 # Structure
 x need a utility parsing function file to include in parse.rs and in tests.rs
-. Allow StoneStack to be empty, get rid of boardspace etc as a result.
+x Allow StoneStack to be empty, get rid of boardspace etc as a result.
   Try this on a branch, see if it actually improves code structure.
 . Add bounded integer crate and use it for size and position values
   This should remove some range checks at construction time, e.g. for board size.

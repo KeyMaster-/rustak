@@ -48,11 +48,17 @@ pub enum StoneKind {
 }
 
 impl StoneKind {
-  fn can_move_onto(self, other: StoneKind) -> bool {
-    match other {
-      StoneKind::FlatStone => true,
-      StoneKind::StandingStone => self == StoneKind::Capstone,
-      StoneKind::Capstone => false
+  fn check_move_onto(self, top: StoneKind) -> Result<bool, ()> {
+    match top {
+      StoneKind::FlatStone => Ok(false),
+      StoneKind::StandingStone => {
+        if self == StoneKind::Capstone {
+          Ok(true)
+        } else {
+          Err(())
+        }
+      },
+      StoneKind::Capstone => Err(())
     }
   }
 }
@@ -105,13 +111,21 @@ impl Stone {
   pub fn new(kind: StoneKind, color: Color) -> Self {
     Self { kind, color }
   }
+
+  fn place_onto(self, stack: &mut StoneStack) -> Result<(), ()> { // TODO error type
+    if stack.count() != 0 {
+      Err(())
+    } else {
+      stack.0.push(self);
+      Ok(())
+    }
+  }
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct StoneStack(Vec<Stone>);
 
 pub enum StoneStackConstructionError {
-  NoStones,
   IllegalSequence
 }
 
@@ -123,10 +137,6 @@ impl StoneStack {
 
   pub fn multiple(stones: Vec<Stone>) -> Result<Self, StoneStackConstructionError> {
     use StoneStackConstructionError::*;
-
-    if stones.len() == 0 {
-      return Err(NoStones);
-    } 
 
     for (i, stone) in stones.iter().enumerate() {
       if i != stones.len() - 1 {
@@ -142,44 +152,45 @@ impl StoneStack {
     self.0.len()
   }
 
-  fn take(&mut self, count: usize) -> Result<StoneStack, ()> { // TODO error type. Too many or too few
-    if count == 0 || count >= self.count() { return Err(()) }
+  fn take(&mut self, count: usize) -> Result<StoneStack, ()> { // TODO error type. Too many
+    if count > self.count() { return Err(()) }
     Ok(StoneStack(self.0.split_off(self.count() - count)))
   }
 
-  fn drop_split(mut self, count: usize) -> (StoneStack, Option<StoneStack>) {
-    if count == 0 {
-      panic!("Can't drop 0 stones from a stack.");
-    }
-    // TODO need to check for count == 0 here, otherwise bottom stone stack has 0 elements
-    let top_stones = self.0.split_off(count);
-    let top_stack = if top_stones.len() != 0 { Some(Self(top_stones)) } else { None };
-    (self, top_stack)
+  fn drop_split(mut self, count: usize) -> Result<(StoneStack, StoneStack), ()> { // TODO error type
+    if count > self.count() { return Err(()) } 
+    let top_stack = Self(self.0.split_off(count));
+    Ok((self, top_stack))
   }
 
-  fn top_stone(&self) -> Stone {
-    *self.0.last().unwrap()
+  fn top_stone(&self) -> Option<Stone> {
+    self.0.last().copied()
   }
 
-  fn bot_stone(&self) -> Stone {
-    *self.0.first().unwrap()
+  fn bot_stone(&self) -> Option<Stone> {
+    self.0.first().copied()
   }
 
-  fn controlling_color(&self) -> Color {
-    self.top_stone().color
+  fn controlling_color(&self) -> Option<Color> {
+    self.top_stone().map(|s| s.color)
   }
 
-  fn add_stack(&mut self, mut stones: StoneStack) -> Result<(), ()> { // TODO error type
-    if stones.bot_stone().kind.can_move_onto(self.top_stone().kind) {
-        // flatten standing stone
-      if let StoneKind::StandingStone = self.top_stone().kind {
-        self.0.last_mut().unwrap().kind = StoneKind::FlatStone;
-      }
-
-      self.0.append(&mut stones.0);
+  fn move_onto(mut self, other: &mut StoneStack) -> Result<(), ()> { // TODO error type
+    if self.count() == 0 {
+      Ok(())
+    } else if other.count() == 0 {
+      std::mem::replace(other, self);
       Ok(())
     } else {
-      Err(())
+      let self_bot = self.bot_stone().unwrap();
+      let other_top = other.top_stone().unwrap();
+
+      let flatten = self_bot.kind.check_move_onto(other_top.kind)?;
+      if flatten {
+        other.0.last_mut().unwrap().kind = StoneKind::FlatStone;
+      }
+      other.0.append(&mut self.0);
+      Ok(())
     }
   }
 
@@ -188,49 +199,10 @@ impl StoneStack {
   }
 }
 
-#[derive(Debug, Clone, Default, Eq, PartialEq)]
-pub struct BoardSpace(Option<StoneStack>);
-
-impl BoardSpace {
-  fn place(&mut self, stone: Stone) -> Result<(), ()> { // TODO error type
-    if self.0.is_some() { return Err(()) }
-    self.0.replace(StoneStack::single(stone));
-    Ok(())
-  }
-
-  // TODO naming
-  fn drop_add(&mut self, stack: StoneStack) -> Result<(), ()> { // TODO error type
-    if let Some(existing) = &mut self.0 {
-      existing.add_stack(stack)
-    } else {
-      self.0.replace(stack);
-      Ok(())
-    }
-  }
-
-  fn take(&mut self, count: usize) -> Result<StoneStack, ()> { // todo add error type here
-    if count == 0 { return Err(()) }
-    if let Some(stack) = &mut self.0 {
-      if stack.count() == count {
-        Ok(self.0.take().unwrap())
-      } else {
-        stack.take(count)
-      }
-    } else {
-      Err(())
-    }
-  }
-
-  fn controlling_color(&self) -> Option<Color> {
-    self.0.as_ref().map(StoneStack::controlling_color)
-  }
-
-}
-
 // The actual state on the board
 #[derive(Debug, Eq, PartialEq, Clone)]
 struct Board {
-  spaces: Grid<BoardSpace>,
+  stacks: Grid<StoneStack>,
   size: usize
 }
 
@@ -238,7 +210,7 @@ impl Board {
   fn new(size: usize) -> Option<Self> {
     if MIN_BOARD_SIZE <= size && size <= MAX_BOARD_SIZE {
       Some(Self {
-        spaces: Grid::new(size, size),
+        stacks: Grid::new(size, size),
         size
       })
     } else {
@@ -246,15 +218,13 @@ impl Board {
     }
   }
 
-  fn from_data(stacks: Vec<Option<StoneStack>>, size: usize) -> Option<Self> {
+  fn from_data(stacks: Vec<StoneStack>, size: usize) -> Option<Self> {
     if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE || stacks.len() != size * size {
       return None;
     }
 
-    let spaces: Vec<_> = stacks.into_iter().map(|stack_opt| BoardSpace(stack_opt)).collect();
-
     Some(Self {
-      spaces: Grid::from_vec(spaces, size),
+      stacks: Grid::from_vec(stacks, size),
       size
     })
   }
@@ -297,8 +267,7 @@ pub enum PlacementInvalidReason {
   NoStoneAvailable,
   KindNotValid,
   LocationOutsideBoard,
-  SpaceOccupied,
-  StoneNotAvailable
+  SpaceOccupied
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -324,15 +293,17 @@ impl Board {
         use PlacementInvalidReason::*;
 
         if !self.loc_inside(location) { return Err(LocationOutsideBoard.into()) }
-        let space = &mut self.spaces[*location];
-        space.place(Stone { kind: *kind, color: *color }).map_err(|_| SpaceOccupied.into()) // TODO move error type up into place function
+        let stack = &mut self.stacks[*location];
+        Stone { kind: *kind, color: *color }.place_onto(stack).map_err(|_| SpaceOccupied.into()) // TODO move error type into place function
       },
       Move::Movement { start, direction, drops } => {
         use MovementInvalidReason::*;
 
         if !self.loc_inside(start) { return Err(StartOutsideBoard.into()) }
-        let space = &mut self.spaces[*start];
-        match space.controlling_color() {
+
+        let stack = &mut self.stacks[*start];
+
+        match stack.controlling_color() {
           None => return Err(SpaceEmpty.into()),
           Some(controlling_color) => if *color != controlling_color { return Err(StartNotControlled.into()) }
         }
@@ -341,20 +312,17 @@ impl Board {
         if pickup_count > self.size {
           return Err(PickupTooLarge.into());
         }
-        let mut carry_stack_opt = Some(space.take(pickup_count).map_err(|_| MoveInvalidReason::from(PickupTooLarge))?);
 
-        let mut drop_loc = start.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
+        let mut carry_stack = stack.take(pickup_count).map_err(|_| MoveInvalidReason::from(PickupTooLarge))?;
+        let mut drop_loc = *start;
+
         for &drop_count in drops {
-          let target_space = &mut self.spaces[drop_loc];
-          // the carry_stack_opt + take is necessary so that we never move that variable. For the current borrow checker, it needs to stay valid for the entirety for the loop.
-          let carry_stack = carry_stack_opt.take().unwrap(); // we already know we have enough stones in our stack to cover the total amount, so this is safe
-
-          let (drop_stack, new_carry_stack_opt) = carry_stack.drop_split(drop_count);
-          target_space.drop_add(drop_stack).map_err(|_| MoveInvalidReason::from(DropNotAllowed))?;
-
-          carry_stack_opt = new_carry_stack_opt; // destructuring doesn't allow assignment to existing bindings, so we need an intermediate here
-
           drop_loc = drop_loc.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
+          let target_stack = &mut self.stacks[drop_loc];
+
+          let (drop_stack, new_carry_stack) = carry_stack.drop_split(drop_count).unwrap();
+          carry_stack = new_carry_stack;
+          drop_stack.move_onto(target_stack).map_err(|_| MoveInvalidReason::from(DropNotAllowed))?;
         }
 
         Ok(())
@@ -449,7 +417,7 @@ impl Game {
     }
   }
 
-  pub fn from_data(stacks: Vec<Option<StoneStack>>, moves: u32) -> Result<Self, GameFromDataError> {
+  pub fn from_data(stacks: Vec<StoneStack>, moves: u32) -> Result<Self, GameFromDataError> {
     let size = (stacks.len() as f64).sqrt().checked_as::<usize>().ok_or(GameFromDataError::InvalidSize)?;
     if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE { return Err(GameFromDataError::InvalidSize); }
 
@@ -467,8 +435,8 @@ impl Game {
       })
     };
 
-    let count_stones = |stacks: &Vec<Option<StoneStack>>, color| {
-      stacks.iter().filter_map(|stack_opt| stack_opt.as_ref()).fold((0, 0), 
+    let count_stones = |stacks: &Vec<StoneStack>, color| {
+      stacks.iter().fold((0, 0), 
             |(flats, caps), stack| {
               let (add_flats, add_caps) = stack_count_stones(stack, color);
               (flats + add_flats, caps + add_caps)
@@ -655,20 +623,15 @@ impl Stone {
 
 impl fmt::Display for StoneStack {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    for stone in &self.0 {
-      write!(f, "{}", stone.to_colored_string())?;
-    }
-    Ok(())
-  }
-}
-
-impl fmt::Display for BoardSpace {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    if let Some(stack) = &self.0 {
-      write!(f, "{}", stack)
+    if self.count() == 0 {
+      write!(f, " ")?;
     } else {
-      write!(f, " ")
+      for stone in &self.0 {
+        write!(f, "{}", stone.to_colored_string())?;
+      }
     }
+    
+    Ok(())
   }
 }
 
@@ -695,18 +658,18 @@ fn pad_stone_string(s: &mut String, width: usize) {
 
 impl fmt::Display for Board {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let mut space_strings = Grid::from_vec(self.spaces.iter().map(|space| space.to_string()).collect(), self.size);
-    let col_widths: Vec<usize> = (0..self.size).map(|col_idx| space_strings.iter_col(col_idx).map(stone_string_width).max().unwrap()).collect();
+    let mut stack_strings = Grid::from_vec(self.stacks.iter().map(|stack| stack.to_string()).collect(), self.size);
+    let col_widths: Vec<usize> = (0..self.size).map(|col_idx| stack_strings.iter_col(col_idx).map(stone_string_width).max().unwrap()).collect();
 
     for row_idx in 0..self.size {
-      for (col_idx, space_string) in space_strings.iter_row_mut(row_idx).enumerate() {
-        pad_stone_string(space_string, col_widths[col_idx]);
+      for (col_idx, stack_string) in stack_strings.iter_row_mut(row_idx).enumerate() {
+        pad_stone_string(stack_string, col_widths[col_idx]);
       }
     }
 
     let row_strings = 
       (0..self.size)
-      .map(|row_idx| space_strings.iter_row(row_idx).cloned().collect::<Vec<String>>().join(" ┃ "))
+      .map(|row_idx| stack_strings.iter_row(row_idx).cloned().collect::<Vec<String>>().join(" ┃ "))
       .enumerate()
       .map(|(row_idx, row_str)| format!("{} ┃ {} ┃", row_idx + 1, row_str))
       .rev();
@@ -742,7 +705,6 @@ impl fmt::Display for Board {
     Ok(())
   }
 }
-
 
 impl fmt::Display for Game {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

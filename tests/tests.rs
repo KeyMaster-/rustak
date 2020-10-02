@@ -17,13 +17,6 @@ use tak::utils::nom::{
 type ParseError<'a> = nom::error::VerboseError<NomInput<'a>>;
 type ParseResult<'a, T> = NomResult<'a, T, ParseError<'a>>;
 
-// "
-// ;;;wfbcbs;;
-// ;;;;;
-// ;;;;;
-// ;;;;;
-// "
-
 fn parse_color(i: Input) -> ParseResult<Color> {
   map(one_of("wWbB"), |c| match c {
     'w'|'W' => Color::White,
@@ -45,19 +38,18 @@ fn parse_stone(i: Input) -> ParseResult<Stone> {
   map(pair(parse_color, parse_stone_kind), |(color, kind)| Stone::new(kind, color))(i)
 }
 
-fn parse_stack(i: Input) -> ParseResult<Option<StoneStack>> {
+fn parse_stack(i: Input) -> ParseResult<StoneStack> { 
   map_res(many0(parse_stone), |stones| {
     match StoneStack::multiple(stones) {
-      Ok(stack) => Ok(Some(stack)),
+      Ok(stack) => Ok(stack),
       Err(error) => match error {
-        StoneStackConstructionError::NoStones => Ok(None),
-        StoneStackConstructionError::IllegalSequence => Err(()) // Better error type, propagate
+        StoneStackConstructionError::IllegalSequence => Err(()) //TODO better error type, propagate
       }
     }
   })(i)
 }
 
-fn parse_row(i: Input) -> ParseResult<Vec<Option<StoneStack>>> {
+fn parse_row(i: Input) -> ParseResult<Vec<StoneStack>> {
   map(
     tuple((
       multispace0, 
