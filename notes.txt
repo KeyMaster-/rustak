@@ -18,25 +18,49 @@ Examples this applies for so far:
     Probably should be Grid.get(location) then, which will need a newtype over grid
 
 --
-. implement carry limit
-. test data processing binary
+# Structure
+x need a utility parsing function file to include in parse.rs and in tests.rs
+. Allow StoneStack to be empty, get rid of boardspace etc as a result.
+  Try this on a branch, see if it actually improves code structure.
+. Add bounded integer crate and use it for size and position values
+  This should remove some range checks at construction time, e.g. for board size.
+  This won't get around checking location-in-board cases, I don't want to tie the location type to board size.
+. Better error types in test parsing functions.
+  Need to handle nom errors (with input location context and custom context strings)
+  as well as object construction errors.
+    Need to understand how the add context & combine error functions work.
+    I think as a parse tree fails upwards, it accumulates errors.
+. Add error context to appropriate places in the test parsers.
+. Better error types for game types (see todos)
+
+
+# Rules
+x implement carry limit
+. win checking
+  return continue/colour win as Ok result from make_move
+  . road
+  . space cover
+  . run out of pieces
+
+
+# Testing
+. hand-written tests
+  x parse game state from string
+    reconstruct number of pieces left etc based on pieces placed
+
+## Positive testing from playtak history
+. create test data processing binary
   . Extract games data from playtak database
   . parse & convert to game history struct (game size + list of moves + end result)
     . this will need a game constructor for different sizes, unless I filter out anything not 5x5
     . I can ignore end result for now
   . serialize to file
 
-. test harness
+. create test harness
   . deserialize test histories from file
   . Run through, verify that no move is ever invalid
 
-. need a utility parsing function file to include in parse.rs and in tests.rs
-
-. hand-written tests
-  . parse game state from string
-    reconstruct number of pieces left etc based on pieces placed
-
-. fuzz testing
+. fuzz testing (?)
   . load test histories, randomly mutate moves
     Issues: Can't know easily what error to expect.
             Also might happen to mutate to another valid move.

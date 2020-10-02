@@ -273,7 +273,7 @@ impl<T: Clone> core::ops::IndexMut<Location> for Grid<T> {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum MoveInvalidReason {
   FirstMoveNotPlacement,
   Placement(PlacementInvalidReason),
@@ -292,7 +292,7 @@ impl From<MovementInvalidReason> for MoveInvalidReason {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum PlacementInvalidReason {
   NoStoneAvailable,
   KindNotValid,
@@ -301,7 +301,7 @@ pub enum PlacementInvalidReason {
   StoneNotAvailable
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum MovementInvalidReason {
   StartOutsideBoard,
   SpaceEmpty,
@@ -338,6 +338,9 @@ impl Board {
         }
 
         let pickup_count = drops.iter().sum();
+        if pickup_count > self.size {
+          return Err(PickupTooLarge.into());
+        }
         let mut carry_stack_opt = Some(space.take(pickup_count).map_err(|_| MoveInvalidReason::from(PickupTooLarge))?);
 
         let mut drop_loc = start.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;

@@ -82,15 +82,36 @@ fn parse_board(i: Input) -> Result<Game, nom::Err<ParseError>> {
 }
 
 #[test]
-fn check_parsing() -> Result<(), nom::Err<ParseError<'static>>> {
-  let game = parse_board("
+fn testing() -> Result<(), nom::Err<ParseError<'static>>> {
+  let mut game = parse_board("
     |    |||  ||
     |wfbc|||  ||
-    |    |||  ||
+    |    |||wc||
     |    |||bs||
     |    |||  || 2")?;
 
-  println!("{}", game);
+  let res = game.make_move("d3-".parse().unwrap());
+  println!("{:?}", res);
+
+  assert_eq!(game, parse_board("
+    |    |||    ||
+    |wfbc|||    ||
+    |    |||    ||
+    |    |||bfwc||
+    |    |||    || 3")?);
+
+  Ok(())
+}
+
+#[test]
+fn carry_limit() -> Result<(), nom::Err<ParseError<'static>>> {
+  let mut game = parse_board("
+    |wfwfwfwf|||
+    |        |||
+    |        ||| 2")?;
+
+  let res = game.make_move("4a3-".parse().unwrap());
+  assert_eq!(res.unwrap_err(), MoveInvalidReason::Movement(MovementInvalidReason::PickupTooLarge));
 
   Ok(())
 }
