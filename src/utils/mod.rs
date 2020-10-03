@@ -2,7 +2,7 @@ pub mod nom {
   use ::nom::{
     IResult,
     InputLength,
-    error::ParseError,
+    error::{ParseError, FromExternalError},
     combinator::{map, map_res, all_consuming, verify},
     character::complete::{one_of, digit1}
   };
@@ -14,7 +14,7 @@ pub mod nom {
   where 
     I: InputLength,
     E: std::convert::From<nom::Err<EI>>,
-    F: Fn(I) -> IResult<I, O, EI>
+    F: FnMut(I) -> IResult<I, O, EI>
   {
     let (_, res) = all_consuming(f)(input)?;
     Ok(res)
@@ -36,7 +36,7 @@ pub mod nom {
     map(digit_nonzero, |c| c.to_digit(10).unwrap() as u8)(i)
   }
   
-  pub fn u32<'a, E: ParseError<Input<'a>>>(i: Input<'a>) -> Result<u32, E> {
+  pub fn u32<'a, E: ParseError<Input<'a>> + FromExternalError<Input<'a>, std::num::ParseIntError>>(i: Input<'a>) -> Result<u32, E> {
     map_res(digit1, |sub: Input| sub.parse::<u32>())(i)
   }
 }

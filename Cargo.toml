@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 read_input = "0.8"
-nom = "5"
+nom = "6.0.0-alpha2"
 grid = "0.2"
 colored = "2"
-az = "1"
+thiserror = "1"

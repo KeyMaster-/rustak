@@ -1,6 +1,6 @@
 use std::fmt;
 use grid::Grid;
-use az::CheckedAs;
+use thiserror::Error;
 
 mod parse;
 pub mod utils;
@@ -125,7 +125,9 @@ impl Stone {
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct StoneStack(Vec<Stone>);
 
+#[derive(Error, Debug)]
 pub enum StoneStackConstructionError {
+  #[error("Illegal sequence of stone kinds")]
   IllegalSequence
 }
 
@@ -243,41 +245,45 @@ impl<T: Clone> core::ops::IndexMut<Location> for Grid<T> {
   }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Error, Debug, Eq, PartialEq)]
 pub enum MoveInvalidReason {
+  #[error("First move can only be a placement")]
   FirstMoveNotPlacement,
-  Placement(PlacementInvalidReason),
-  Movement(MovementInvalidReason)
+
+  #[error("Invalid placement: {0}")]
+  Placement(#[from] PlacementInvalidReason),
+
+  #[error("Invalid movement: {0}")]
+  Movement(#[from] MovementInvalidReason)
 }
 
-impl From<PlacementInvalidReason> for MoveInvalidReason {
-  fn from(reason: PlacementInvalidReason) -> Self {
-    MoveInvalidReason::Placement(reason)
-  }
-}
 
-impl From<MovementInvalidReason> for MoveInvalidReason {
-  fn from(reason: MovementInvalidReason) -> Self {
-    MoveInvalidReason::Movement(reason)
-  }
-}
-
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Error, Debug, Eq, PartialEq)]
 pub enum PlacementInvalidReason {
+  #[error("No stone of the requested kind was available")]
   NoStoneAvailable,
+  #[error("The requested stone kind is not valid")]
   KindNotValid,
+  #[error("The placement location is outside the board")]
   LocationOutsideBoard,
+  #[error("The target space is not empty")]
   SpaceOccupied
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Error, Debug, Eq, PartialEq)]
 pub enum MovementInvalidReason {
+  #[error("The starting location is outside the board")]
   StartOutsideBoard,
+  #[error("The target space contains no stones to move")]
   SpaceEmpty,
+  #[error("The active player does not control the target stack")]
   StartNotControlled,
+  #[error("The target stack does not contain enough stones")]
   PickupTooLarge,
+  #[error("The move steps outside the board")]
   MoveOutsideBoard,
-  DropNotAllowed,
+  #[error("One of the drops creates an invalid stack")]
+  DropNotAllowed, //TODO add location info about where the drop is invalid, maybe the index of the drop (i.e. first, second etc)
 }
 
 impl Board {
@@ -402,10 +408,12 @@ pub struct Game {
   moves: u32
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum GameFromDataError {
-  InvalidSize,
-  TooManyPiecesForSize
+  #[error("Invalid size")]
+  InvalidSize, //TODO supply attempted size
+  #[error("The board contains more pieces than are available at this game size")]
+  TooManyPiecesForSize // TODO supply stone kind that was too many, and placed number vs allowed number
 }
 
 impl Game {
@@ -418,7 +426,11 @@ impl Game {
   }
 
   pub fn from_data(stacks: Vec<StoneStack>, moves: u32) -> Result<Self, GameFromDataError> {
-    let size = (stacks.len() as f64).sqrt().checked_as::<usize>().ok_or(GameFromDataError::InvalidSize)?;
+    let size = (stacks.len() as f64).sqrt();
+    if size.fract() != 0.0 {
+      return Err(GameFromDataError::InvalidSize);
+    }
+    let size = size as usize;
     if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE { return Err(GameFromDataError::InvalidSize); }
 
     let stack_count_stones = |stack: &StoneStack, filter_color| {

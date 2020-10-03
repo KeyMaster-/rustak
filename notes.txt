@@ -22,11 +22,22 @@ Examples this applies for so far:
 x need a utility parsing function file to include in parse.rs and in tests.rs
 x Allow StoneStack to be empty, get rid of boardspace etc as a result.
   Try this on a branch, see if it actually improves code structure.
-. Better error types in test parsing functions.
+x Better error types in test parsing functions.
   Need to handle nom errors (with input location context and custom context strings)
   as well as object construction errors.
     Need to understand how the add context & combine error functions work.
     I think as a parse tree fails upwards, it accumulates errors.
+  Outcome: 
+    Nom 5's map_res discards the map's error and replaces it with a simple "MapRes" error kind.
+    This means that the construction errors get entirely discarded.
+    To get around this, moved to the nom 6 alpha, which includes changes to propagate the map_res error.
+      This also added a `finish()` method which converts IResult to Result. This is close to but not quite
+      what I do with finalise (it doesn't convert (Remaining, Output) to just Output). Might be worth suggesting
+      on the nom repo in the future?
+    Copied Amos' custom error type (which largely compies VerboseError) for error accumulating and some formatting.
+    Added the FromExternalError trait to accept generic construction errors.
+    Included thiserror to make all of lib's errors into std::error::Errors since that's what FromExternalError wants.
+  
 . Add error context to appropriate places in the test parsers.
 . Better error types for game types (see todos)
 . Add bounded integer crate and use it for size and position values
