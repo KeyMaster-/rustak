@@ -2,8 +2,7 @@ use std::fmt;
 use grid::Grid;
 use thiserror::Error;
 
-mod parse;
-pub mod utils;
+pub mod parse;
 
 const MIN_BOARD_SIZE: usize = 3;
 const MAX_BOARD_SIZE: usize = 8;
@@ -615,8 +614,14 @@ impl fmt::Display for Move {
 }
 
 use colored::*;
-// const STONE_CHARS: [char; 3] = ['ロ', 'ー', 'ト'];
 const STONE_CHARS: [char; 3] = ['f', 's', 'c'];
+
+fn apply_color(text: &str, color: Color) -> ColoredString {
+  match color {
+    Color::White => text.black().on_white(),
+    Color::Black => text.white().on_black()
+  }
+}
 
 impl Stone {
   fn to_colored_string(&self) -> ColoredString {
@@ -624,12 +629,9 @@ impl Stone {
       StoneKind::FlatStone => STONE_CHARS[0],
       StoneKind::StandingStone => STONE_CHARS[1],
       StoneKind::Capstone => STONE_CHARS[2]
-    }.to_string();
+    };
 
-    match self.color {
-      Color::White => c.black().on_white(),
-      Color::Black => c.white().on_black()
-    }
+    apply_color(&c.to_string(), self.color)    
   }
 }
 
@@ -723,7 +725,7 @@ impl fmt::Display for Game {
     write!(f, "{}", self.board)?;
     write!(f, "Turn {}, {} | W: {}F {}C, B: {}F {}C", 
       self.get_turn(),
-      self.get_active_color(),
+      apply_color(&self.get_active_color().to_string(), self.get_active_color()),
       self.held_stones.white.flat, 
       self.held_stones.white.capstone, 
       self.held_stones.black.flat, 

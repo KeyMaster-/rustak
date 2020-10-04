@@ -57,6 +57,12 @@ x implement carry limit
   x parse game state from string
     reconstruct number of pieces left etc based on pieces placed
 
+. Parsing tests
+  . Add "root cause" method to error type (?)
+    The full error type is hard to assert against, and we don't care about the exact chain of parsers that got us there.
+    What we care about is that it reports the correct validation error if there is one (e.g. invalid game size, invalid stack),
+    or potentially also the input position it failed at.
+
 ## Positive testing from playtak history
 . create test data processing binary
   . Extract games data from playtak database
