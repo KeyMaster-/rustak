@@ -3,7 +3,7 @@ use tak::*;
 
 
 fn main() {
-  let mut game = Game::new();
+  let mut game = Game::new(BoardSize::new(5).unwrap());
 
   loop {
     println!("{}", game);

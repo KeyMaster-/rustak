@@ -12,3 +12,4 @@ nom = "6.0.0-alpha2"
 grid = "0.2"
 colored = "2"
 thiserror = "1"
+bounded-integer = { version = "0.2", path = "deps/bounded-integer" }

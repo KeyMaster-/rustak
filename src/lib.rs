@@ -1,11 +1,14 @@
 use std::fmt;
 use grid::Grid;
 use thiserror::Error;
+use bounded_integer::bounded_integer;
 
 pub mod parse;
 
-const MIN_BOARD_SIZE: usize = 3;
-const MAX_BOARD_SIZE: usize = 8;
+bounded_integer! {
+  #[repr(usize)]
+  pub struct BoardSize { 3..=8 }
+}
 const FILE_CHARS: &str = "abcdefgh";
 const RANK_CHARS: &str = "12345678";
 
@@ -21,7 +24,7 @@ pub struct Location {
 
 impl Location {
   pub fn from_coords(x: usize, y: usize) -> Option<Self> {
-    if x < MAX_BOARD_SIZE && y < MAX_BOARD_SIZE {
+    if x < BoardSize::MAX_VALUE && y < BoardSize::MAX_VALUE {
       Some(Self { x, y })
     } else {
       None
@@ -180,7 +183,7 @@ impl StoneStack {
     if self.count() == 0 {
       Ok(())
     } else if other.count() == 0 {
-      std::mem::replace(other, self);
+      *other = self;
       Ok(())
     } else {
       let self_bot = self.bot_stone().unwrap();
@@ -204,28 +207,28 @@ impl StoneStack {
 #[derive(Debug, Eq, PartialEq, Clone)]
 struct Board {
   stacks: Grid<StoneStack>,
-  size: usize
+  size: BoardSize
 }
 
 impl Board {
-  fn new(size: usize) -> Option<Self> {
-    if MIN_BOARD_SIZE <= size && size <= MAX_BOARD_SIZE {
-      Some(Self {
-        stacks: Grid::new(size, size),
-        size
-      })
-    } else {
-      None
+  fn new(size: BoardSize) -> Self {
+    let size_prim = size.get();
+    Self {
+      stacks: Grid::new(size_prim, size_prim),
+      size
     }
   }
 
-  fn from_data(stacks: Vec<StoneStack>, size: usize) -> Option<Self> {
-    if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE || stacks.len() != size * size {
-      return None;
+  fn from_data(stacks: Vec<StoneStack>) -> Result<Self, ()> {
+    let size = (stacks.len() as f64).sqrt();
+    if size.fract() != 0.0 {
+      return Err(());
     }
 
-    Some(Self {
-      stacks: Grid::from_vec(stacks, size),
+    let size = BoardSize::new(size as usize).ok_or(())?;
+
+    Ok(Self {
+      stacks: Grid::from_vec(stacks, size.get()),
       size
     })
   }
@@ -287,7 +290,7 @@ pub enum MovementInvalidReason {
 
 impl Board {
   fn loc_inside(&self, loc: &Location)->bool {
-    loc.x < self.size && loc.y < self.size
+    loc.x < self.size.get() && loc.y < self.size.get()
   }
 
   fn make_move(&mut self, m: &ColorMove)->Result<(), MoveInvalidReason> {
@@ -314,7 +317,7 @@ impl Board {
         }
 
         let pickup_count = drops.iter().sum();
-        if pickup_count > self.size {
+        if pickup_count > self.size.get() {
           return Err(PickupTooLarge.into());
         }
 
@@ -322,7 +325,7 @@ impl Board {
         let mut drop_loc = *start;
 
         for &drop_count in drops {
-          drop_loc = drop_loc.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
+          drop_loc = drop_loc.move_along(*direction, self.size.get()).ok_or(MoveOutsideBoard)?;
           let target_stack = &mut self.stacks[drop_loc];
 
           let (drop_stack, new_carry_stack) = carry_stack.drop_split(drop_count).unwrap();
@@ -343,15 +346,15 @@ struct HeldStones {
 }
 
 impl HeldStones {
-  fn for_size(size: usize) -> Option<Self> {
-    match size {
-      3 => Some(Self { flat: 10, capstone: 0}),
-      4 => Some(Self { flat: 15, capstone: 0}),
-      5 => Some(Self { flat: 21, capstone: 1}),
-      6 => Some(Self { flat: 30, capstone: 1}),
-      7 => Some(Self { flat: 40, capstone: 1}),
-      8 => Some(Self { flat: 50, capstone: 2}),
-      _ => None
+  fn for_size(size: BoardSize) -> Self {
+    match size.get() {
+      3 => Self { flat: 10, capstone: 0},
+      4 => Self { flat: 15, capstone: 0},
+      5 => Self { flat: 21, capstone: 1},
+      6 => Self { flat: 30, capstone: 1},
+      7 => Self { flat: 40, capstone: 1},
+      8 => Self { flat: 50, capstone: 2},
+      _ => unreachable!()
     }
   }
 
@@ -416,23 +419,16 @@ pub enum GameFromDataError {
 }
 
 impl Game {
-  pub fn new(size: usize) -> Option<Self> {
-    if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE { return None }
-
-    Some(Self {
-      board: Board::new(size).unwrap(),
-      held_stones: GameHeldStones::new(HeldStones::for_size(size).unwrap()),
+  pub fn new(size: BoardSize) -> Self {
+    Self {
+      board: Board::new(size),
+      held_stones: GameHeldStones::new(HeldStones::for_size(size)),
       moves: 0
-    })
+    }
   }
 
   pub fn from_data(stacks: Vec<StoneStack>, moves: u32) -> Result<Self, GameFromDataError> {
-    let size = (stacks.len() as f64).sqrt();
-    if size.fract() != 0.0 {
-      return Err(GameFromDataError::InvalidSize);
-    }
-    let size = size as usize;
-    if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE { return Err(GameFromDataError::InvalidSize); }
+    let board = Board::from_data(stacks).map_err(|_| GameFromDataError::InvalidSize)?;
 
     let stack_count_stones = |stack: &StoneStack, filter_color| {
       stack.iter().fold((0,0), |(flats, caps), stone| {
@@ -448,18 +444,18 @@ impl Game {
       })
     };
 
-    let count_stones = |stacks: &Vec<StoneStack>, color| {
-      stacks.iter().fold((0, 0), 
+    let count_stones = |stacks: std::slice::Iter<StoneStack>, color| {
+      stacks.fold((0, 0), 
         |(flats, caps), stack| {
           let (add_flats, add_caps) = stack_count_stones(stack, color);
           (flats + add_flats, caps + add_caps)
         })
     };
     
-    let (white_flats, white_caps) = count_stones(&stacks, Color::White);
-    let (black_flats, black_caps) = count_stones(&stacks, Color::Black);
+    let (white_flats, white_caps) = count_stones(board.stacks.iter(), Color::White);
+    let (black_flats, black_caps) = count_stones(board.stacks.iter(), Color::Black);
 
-    let full_held_stones = HeldStones::for_size(size).unwrap();
+    let full_held_stones = HeldStones::for_size(board.size);
     if white_flats > full_held_stones.flat || white_caps > full_held_stones.capstone ||
        black_flats > full_held_stones.flat || black_caps > full_held_stones.capstone {
         return Err(GameFromDataError::TooManyPiecesForSize);
@@ -481,7 +477,7 @@ impl Game {
     };
 
     Ok(Self {
-      board: Board::from_data(stacks, size).unwrap(),
+      board: board,
       held_stones,
       moves
     })
@@ -541,9 +537,6 @@ impl Game {
 
 impl fmt::Display for Location {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    if self.x >= MAX_BOARD_SIZE || self.y >= MAX_BOARD_SIZE {
-      return Err(fmt::Error);
-    }
     let file = FILE_CHARS.chars().nth(self.x as usize).unwrap();
     let rank = self.y + 1;
     write!(f, "{}{}", file, rank)
@@ -674,17 +667,18 @@ fn pad_stone_string(s: &mut String, width: usize) {
 
 impl fmt::Display for Board {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let mut stack_strings = Grid::from_vec(self.stacks.iter().map(|stack| stack.to_string()).collect(), self.size);
-    let col_widths: Vec<usize> = (0..self.size).map(|col_idx| stack_strings.iter_col(col_idx).map(stone_string_width).max().unwrap()).collect();
+    let size = self.size.get();
+    let mut stack_strings = Grid::from_vec(self.stacks.iter().map(|stack| stack.to_string()).collect(), size);
+    let col_widths: Vec<usize> = (0..size).map(|col_idx| stack_strings.iter_col(col_idx).map(stone_string_width).max().unwrap()).collect();
 
-    for row_idx in 0..self.size {
+    for row_idx in 0..size {
       for (col_idx, stack_string) in stack_strings.iter_row_mut(row_idx).enumerate() {
         pad_stone_string(stack_string, col_widths[col_idx]);
       }
     }
 
     let row_strings = 
-      (0..self.size)
+      (0..size)
       .map(|row_idx| stack_strings.iter_row(row_idx).cloned().collect::<Vec<String>>().join(" ┃ "))
       .enumerate()
       .map(|(row_idx, row_str)| format!("{} ┃ {} ┃", row_idx + 1, row_str))
@@ -698,7 +692,7 @@ impl fmt::Display for Board {
 
     let file_cells: Vec<_> = 
       col_widths.iter()
-      .zip((0..self.size).map(|col_idx| FILE_CHARS.chars().nth(col_idx).unwrap()))
+      .zip((0..size).map(|col_idx| FILE_CHARS.chars().nth(col_idx).unwrap()))
       .map(|(&width, file_char)| format!("{:^width$}", file_char, width = width))
       .collect();
 

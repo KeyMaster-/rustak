@@ -41,9 +41,13 @@ x Better error types in test parsing functions.
 . Add error context to appropriate places in the test parsers.
 x Better error types for game types (see todos)
   Outcome: All the relevant actions only failed due to a single reason now, so adding an error type seems unnecessary.
-. Add bounded integer crate and use it for size and position values
+x Add bounded integer crate and use it for size and position values
   This should remove some range checks at construction time, e.g. for board size.
   This won't get around checking location-in-board cases, I don't want to tie the location type to board size.
+  Outcome: 
+    This did indeed remove a bunch of checks and Option<Self> returns, happy with it.
+    Did require patching bounded-integer though, since it added ops for unsigned types even though the underlying type does not support those ops.
+    Namely saturating neg and all variations of abs.
 
 # Rules
 x implement carry limit

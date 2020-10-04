@@ -1,0 +1,3 @@
+[submodule "deps/bounded-integer"]
+	path = deps/bounded-integer
+	url = https://github.com/KeyMaster-/bounded-integer.git
