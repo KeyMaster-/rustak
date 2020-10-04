@@ -111,7 +111,7 @@ impl Stone {
     Self { kind, color }
   }
 
-  fn place_onto(self, stack: &mut StoneStack) -> Result<(), ()> { // TODO error type
+  fn place_onto(self, stack: &mut StoneStack) -> Result<(), ()> {
     if stack.count() != 0 {
       Err(())
     } else {
@@ -142,7 +142,7 @@ impl StoneStack {
     for (i, stone) in stones.iter().enumerate() {
       if i != stones.len() - 1 {
         if stone.kind != StoneKind::FlatStone {
-          return Err(IllegalSequence); // invalid stack composition
+          return Err(IllegalSequence);
         }
       }
     }
@@ -153,12 +153,12 @@ impl StoneStack {
     self.0.len()
   }
 
-  fn take(&mut self, count: usize) -> Result<StoneStack, ()> { // TODO error type. Too many
+  fn take(&mut self, count: usize) -> Result<StoneStack, ()> {
     if count > self.count() { return Err(()) }
     Ok(StoneStack(self.0.split_off(self.count() - count)))
   }
 
-  fn drop_split(mut self, count: usize) -> Result<(StoneStack, StoneStack), ()> { // TODO error type
+  fn drop_split(mut self, count: usize) -> Result<(StoneStack, StoneStack), ()> {
     if count > self.count() { return Err(()) } 
     let top_stack = Self(self.0.split_off(count));
     Ok((self, top_stack))
@@ -176,7 +176,7 @@ impl StoneStack {
     self.top_stone().map(|s| s.color)
   }
 
-  fn move_onto(mut self, other: &mut StoneStack) -> Result<(), ()> { // TODO error type
+  fn move_onto(mut self, other: &mut StoneStack) -> Result<(), ()> {
     if self.count() == 0 {
       Ok(())
     } else if other.count() == 0 {
@@ -299,7 +299,7 @@ impl Board {
 
         if !self.loc_inside(location) { return Err(LocationOutsideBoard.into()) }
         let stack = &mut self.stacks[*location];
-        Stone { kind: *kind, color: *color }.place_onto(stack).map_err(|_| SpaceOccupied.into()) // TODO move error type into place function
+        Stone { kind: *kind, color: *color }.place_onto(stack).map_err(|_| SpaceOccupied.into())
       },
       Move::Movement { start, direction, drops } => {
         use MovementInvalidReason::*;
@@ -416,12 +416,14 @@ pub enum GameFromDataError {
 }
 
 impl Game {
-  pub fn new() -> Self {
-    Self {
-      board: Board::new(5).unwrap(),
-      held_stones: GameHeldStones::new(HeldStones { flat: 21, capstone: 1}),
+  pub fn new(size: usize) -> Option<Self> {
+    if size < MIN_BOARD_SIZE || size > MAX_BOARD_SIZE { return None }
+
+    Some(Self {
+      board: Board::new(size).unwrap(),
+      held_stones: GameHeldStones::new(HeldStones::for_size(size).unwrap()),
       moves: 0
-    }
+    })
   }
 
   pub fn from_data(stacks: Vec<StoneStack>, moves: u32) -> Result<Self, GameFromDataError> {
@@ -448,10 +450,10 @@ impl Game {
 
     let count_stones = |stacks: &Vec<StoneStack>, color| {
       stacks.iter().fold((0, 0), 
-            |(flats, caps), stack| {
-              let (add_flats, add_caps) = stack_count_stones(stack, color);
-              (flats + add_flats, caps + add_caps)
-            })
+        |(flats, caps), stack| {
+          let (add_flats, add_caps) = stack_count_stones(stack, color);
+          (flats + add_flats, caps + add_caps)
+        })
     };
     
     let (white_flats, white_caps) = count_stones(&stacks, Color::White);
@@ -491,7 +493,7 @@ impl Game {
     game_clone.internal_make_move(m)?;
 
     // If we got here, the move was okay and applied to the cloned game.
-    // So write the changes back to ourselves.
+    // Now write the changes back to ourselves.
     *self = game_clone;
     Ok(())
   }
