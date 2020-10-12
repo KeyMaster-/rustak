@@ -1,5 +1,5 @@
-use tak::*;
-use tak::parse::{Input, Error, utils::finalise };
+use rustak::*;
+use rustak::parse::{Input, Error, utils::finalise };
 
 use thiserror::Error;
 
@@ -21,8 +21,45 @@ impl std::fmt::Debug for TestError {
   }
 }
 
+// first round tests
+
+#[test]
+fn first_round_requires_flat() -> Result<(), TestError> {
+  let mut game = Game::new(BoardSize::new(5).unwrap());
+
+  let res = game.make_move("Sa1".parse().unwrap());
+  assert_eq!(res, Err(MoveInvalidReason::Placement(PlacementInvalidReason::StoneKindNotValid)));
+
+  let res = game.make_move("Ca1".parse().unwrap());
+  assert_eq!(res, Err(MoveInvalidReason::Placement(PlacementInvalidReason::StoneKindNotValid)));
+
+  Ok(())
+}
+
+#[test]
+fn first_round_swaps_colours() -> Result<(), TestError> {
+  let mut game = Game::new(BoardSize::new(3).unwrap());
+  
+  game.make_move("a1".parse().unwrap())?;
+  assert_eq!(game, game_from("
+    |  |||
+    |  |||
+    |bf||| 1")?);
+
+  game.make_move("a2".parse().unwrap())?;
+  assert_eq!(game, game_from("
+    |  |||
+    |wf|||
+    |bf||| 2")?);
+
+  Ok(())
+}
+
+// movement tests
+
 #[test]
 fn capstone_flattens_standing_stone() -> Result<(), TestError> {
+  // This needs to be a 5x5 since smaller board sizes don't have capstones available
   let mut game = game_from("
     |  |||||
     |  |||||
@@ -50,7 +87,23 @@ fn carry_limit() -> Result<(), TestError> {
     |        ||| 2")?;
 
   let res = game.make_move("4a3-".parse().unwrap());
-  assert_eq!(res.unwrap_err(), MoveInvalidReason::Movement(MovementInvalidReason::PickupTooLarge));
+  assert_eq!(res, Err(MoveInvalidReason::Movement(MovementInvalidReason::PickupTooLarge)));
+
+  Ok(())
+}
+
+// win tests
+
+#[test]
+fn white_road_win() -> Result<(), TestError> {
+  let mut game = game_from("
+    |wf|wfwf||
+    ||||
+    |||| 2")?;
+
+  let res = game.make_move("b3>".parse().unwrap());
+
+  assert_eq!(res, Ok(GameState::Win(Color::White, WinKind::Road)));
 
   Ok(())
 }

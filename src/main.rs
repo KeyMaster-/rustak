@@ -1,5 +1,5 @@
 use read_input::prelude::*;
-use tak::*;
+use rustak::*;
 
 
 fn main() {
@@ -12,6 +12,9 @@ fn main() {
     let move_res = game.make_move(next_move);
     if let Err(error) = move_res {
       println!("{}", error);
+    } else {
+      let game_state = move_res.unwrap();
+      println!("{:?}", game_state);
     }
   }
 }

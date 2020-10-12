@@ -9,6 +9,7 @@ bounded_integer! {
   #[repr(usize)]
   pub struct BoardSize { 3..=8 }
 }
+
 const FILE_CHARS: &str = "abcdefgh";
 const RANK_CHARS: &str = "12345678";
 
@@ -16,7 +17,7 @@ const RANK_CHARS: &str = "12345678";
 // x is the file, i.e. the lettered direction
 // y is the rank, i.e. the numbered direction
 // note that x and y are 0-indexed, while ranks are 1-indexed
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Location {
   x: usize,
   y: usize
@@ -31,14 +32,23 @@ impl Location {
     }
   }
 
-  pub fn move_along(&self, dir: Direction, board_size: usize) -> Option<Location> {
+  pub fn move_along(&self, dir: Direction, board_size: BoardSize) -> Option<Location> {
     use Direction::*;
     match dir {
-      Left  => if self.x == 0              { None } else { Some(Location { x: self.x - 1, y: self.y }) },
-      Right => if self.x == board_size - 1 { None } else { Some(Location { x: self.x + 1, y: self.y }) },
-      Up    => if self.y == board_size - 1 { None } else { Some(Location { x: self.x, y: self.y + 1 }) },
-      Down  => if self.y == 0              { None } else { Some(Location { x: self.x, y: self.y - 1 }) }
+      Left  => if self.x == 0                    { None } else { Some(Location { x: self.x - 1, y: self.y }) },
+      Right => if self.x == board_size.get() - 1 { None } else { Some(Location { x: self.x + 1, y: self.y }) },
+      Up    => if self.y == board_size.get() - 1 { None } else { Some(Location { x: self.x, y: self.y + 1 }) },
+      Down  => if self.y == 0                    { None } else { Some(Location { x: self.x, y: self.y - 1 }) }
     }
+  }
+
+  fn touching_sides(&self, board_size: BoardSize) -> Sides {
+    Sides::new(self.x == 0, self.y == board_size.get() - 1, self.x == board_size.get() - 1, self.y == 0)
+  }
+
+  fn neighbours(&self, board_size: BoardSize) -> Vec<Self> {
+    use Direction::*;
+    [self.move_along(Left, board_size), self.move_along(Up, board_size), self.move_along(Right, board_size), self.move_along(Down, board_size)].iter().filter_map(|&loc| loc).collect()
   }
 }
 
@@ -50,17 +60,25 @@ pub enum StoneKind {
 }
 
 impl StoneKind {
-  fn check_move_onto(self, top: StoneKind) -> Result<bool, ()> {
+  fn check_move_onto(&self, top: &StoneKind) -> Result<bool, ()> {
     match top {
       StoneKind::FlatStone => Ok(false),
       StoneKind::StandingStone => {
-        if self == StoneKind::Capstone {
+        if *self == StoneKind::Capstone {
           Ok(true)
         } else {
           Err(())
         }
       },
       StoneKind::Capstone => Err(())
+    }
+  }
+
+  fn counts_for_road(&self) -> bool {
+    match self {
+      StoneKind::FlatStone => true,
+      StoneKind::StandingStone => false,
+      StoneKind::Capstone => true
     }
   }
 }
@@ -189,7 +207,7 @@ impl StoneStack {
       let self_bot = self.bot_stone().unwrap();
       let other_top = other.top_stone().unwrap();
 
-      let flatten = self_bot.kind.check_move_onto(other_top.kind)?;
+      let flatten = self_bot.kind.check_move_onto(&other_top.kind)?;
       if flatten {
         other.0.last_mut().unwrap().kind = StoneKind::FlatStone;
       }
@@ -249,14 +267,14 @@ impl<T: Clone> core::ops::IndexMut<Location> for Grid<T> {
 
 #[derive(Error, Debug, Eq, PartialEq)]
 pub enum MoveInvalidReason {
-  #[error("First move can only be a placement")]
-  FirstMoveNotPlacement,
-
   #[error("Invalid placement: {0}")]
   Placement(#[from] PlacementInvalidReason),
 
   #[error("Invalid movement: {0}")]
-  Movement(#[from] MovementInvalidReason)
+  Movement(#[from] MovementInvalidReason),
+
+  #[error("Game has ended")]
+  GameHasEnded,
 }
 
 
@@ -265,7 +283,7 @@ pub enum PlacementInvalidReason {
   #[error("No stone of the requested kind was available")]
   NoStoneAvailable,
   #[error("The requested stone kind is not valid")]
-  KindNotValid,
+  StoneKindNotValid,
   #[error("The placement location is outside the board")]
   LocationOutsideBoard,
   #[error("The target space is not empty")]
@@ -325,7 +343,7 @@ impl Board {
         let mut drop_loc = *start;
 
         for &drop_count in drops {
-          drop_loc = drop_loc.move_along(*direction, self.size.get()).ok_or(MoveOutsideBoard)?;
+          drop_loc = drop_loc.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
           let target_stack = &mut self.stacks[drop_loc];
 
           let (drop_stack, new_carry_stack) = carry_stack.drop_split(drop_count).unwrap();
@@ -337,7 +355,132 @@ impl Board {
       }
     }
   }
+
+
+  fn check_road_win(&self, last_move_color: Color) -> Option<Color> {
+    let size_prim = self.size.get();
+    let mut board_locs_to_process = Vec::with_capacity(size_prim * size_prim);
+    for x in 0..size_prim {
+      for y in 0..size_prim {
+        board_locs_to_process.push(Location::from_coords(x, y).unwrap());
+      }
+    }
+
+    let mut components: Vec<(Color, Sides)> = Vec::new();
+
+    while let Some(loc) = board_locs_to_process.pop() {
+      let stack = &self.stacks[loc];
+      let top_stone = stack.top_stone();
+      if top_stone.is_none() { continue; }
+      let top_stone = top_stone.unwrap();
+      if !top_stone.kind.counts_for_road() { continue; }
+
+      let mut component_touched_sides = Sides::none();
+      let mut component_locs_to_process = vec![loc];
+
+      while let Some(loc) = component_locs_to_process.pop() {
+        let touching = loc.touching_sides(self.size);
+        component_touched_sides.or(&touching);
+
+        for neighbour in loc.neighbours(self.size) {
+            // TODO this is a copy of the main stack check above, probably worth factoring out
+          let neighbour_stack = &self.stacks[neighbour];
+          let neighbour_stone = neighbour_stack.top_stone();
+          if neighbour_stone.is_none() { continue; }
+          let neighbour_stone = neighbour_stone.unwrap();
+          if !neighbour_stone.kind.counts_for_road() { continue; }
+          if neighbour_stone.color != top_stone.color { continue; }
+
+          // the neighbour counts for walls, and is of the same color, so it belongs to this component.
+          // if this position is still in the global consider list, remove it from there and add it to the component's consider list.
+          // This also avoids adding duplicate positions to the component's consider list.
+          if let Some(idx) = board_locs_to_process.iter().position(|&other| other == neighbour) {
+            board_locs_to_process.swap_remove(idx);
+            component_locs_to_process.push(neighbour);
+          }
+        }
+      }
+
+      components.push((top_stone.color, component_touched_sides));
+    }
+
+    let mut white_win = false;
+    let mut black_win = false;
+    for (color, sides) in components {
+      if sides.has_opposing() {
+        match color {
+          Color::White => white_win = true,
+          Color::Black => black_win = true
+        }
+      }
+    }
+
+    if white_win && black_win {
+      Some(last_move_color)
+    } else if white_win {
+      Some(Color::White)
+    } else if black_win {
+      Some(Color::Black)
+    } else {
+      None
+    }
+
+    // Grab the first one.
+    //   If a road-participating stone, make new component, tag with stone's colour. Add stone to "to process" stack of that component.
+    //   Grab next stone in component's to process stack. find all neighbours, add any that are connected to this component and not already on processing stack. remove them from the global to-process set.
+    //   For each that's added, check what board edges it neighbours if any. Set a corresponding flag on the component.
+    // When the component's stack is done, that's one component fully explored. Grab new space from global "to process" set and make a new component, until the set is empty.
+    // Now, go through all components found. for each check if they have both top+bottom or left+right set. If either, that's a winning road. Set a win flag for that colour.
+    // After looking at all components, check winner flags. 
+    //  If none are set, no win
+    //  If one is set, that colour winds
+    //  If both are set, the last move created roads for both players. last_move_color wins.
+  }
+
+  fn all_spaces_occupied(&self) -> bool {
+    self.stacks.iter().all(|stack| stack.count() != 0)
+  }
+
+  fn count_flats_control(&self) -> (u32, u32) {
+    self.stacks.iter()
+      .filter_map(|stack| stack.top_stone())
+      .filter(|stone| stone.kind == StoneKind::FlatStone)
+      .fold((0, 0), |(white_count, black_count), stone| match stone.color {
+        Color::White => (white_count + 1, black_count),
+        Color::Black => (white_count, black_count + 1)
+      })
+  }
 }
+
+#[derive(Debug, Copy, Clone)]
+struct Sides {
+  left: bool,
+  top: bool,
+  right: bool,
+  bot: bool
+}
+
+impl Sides {
+  fn new(left: bool, top: bool, right: bool, bot: bool) -> Self {
+    Self { left, top, right, bot }
+  }
+
+  fn none() -> Self {
+    Self::new(false, false, false, false)
+  }
+
+  fn has_opposing(&self) -> bool {
+    self.left && self.right || self.top && self.bot
+  }
+
+  fn or(&mut self, other: &Sides) {
+    self.left  |= other.left;
+    self.top   |= other.top;
+    self.right |= other.right;
+    self.bot   |= other.bot;
+  }
+}
+
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 struct HeldStones {
@@ -378,6 +521,10 @@ impl HeldStones {
       }
     }
   }
+
+  fn has_run_out(&self) -> bool {
+    self.flat == 0 && self.capstone == 0
+  }
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -400,6 +547,10 @@ impl GameHeldStones {
       Color::Black => self.black.take_stone(kind),
     }
   }
+
+  fn side_has_run_out(&self) -> bool {
+    self.white.has_run_out() || self.black.has_run_out()
+  }
 }
 
 // The state of a game
@@ -407,6 +558,7 @@ impl GameHeldStones {
 pub struct Game {
   board: Board,
   held_stones: GameHeldStones,
+  state: GameState,
   moves: u32
 }
 
@@ -418,11 +570,26 @@ pub enum GameFromDataError {
   TooManyPiecesForSize // TODO supply stone kind that was too many, and placed number vs allowed number
 }
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum WinKind {
+  Road,
+  BoardFilled,
+  PlayedAllStones(Color)
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum GameState {
+  Ongoing,
+  Win(Color, WinKind),
+  Draw
+}
+
 impl Game {
   pub fn new(size: BoardSize) -> Self {
     Self {
       board: Board::new(size),
       held_stones: GameHeldStones::new(HeldStones::for_size(size)),
+      state: GameState::Ongoing,
       moves: 0
     }
   }
@@ -476,59 +643,96 @@ impl Game {
       black: black_held_stones
     };
 
-    Ok(Self {
+    let mut out = Self {
       board: board,
       held_stones,
-      moves
-    })
+      moves,
+      state: GameState::Ongoing
+    };
+
+    out.state = out.evaluate_state(Color::White);
+    Ok(out)
   }
 
-  pub fn make_move(&mut self, m: Move) -> Result<(), MoveInvalidReason> {
+  pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
     let mut game_clone = self.clone();
 
-    game_clone.internal_make_move(m)?;
+    let new_state = game_clone.internal_make_move(m)?;
 
     // If we got here, the move was okay and applied to the cloned game.
     // Now write the changes back to ourselves.
     *self = game_clone;
-    Ok(())
+    Ok(new_state)
   }
 
-  fn internal_make_move(&mut self, m: Move) -> Result<(), MoveInvalidReason> {
-    let mut move_color = self.get_active_color();
+  fn internal_make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
+    if self.state != GameState::Ongoing {
+      return Err(MoveInvalidReason::GameHasEnded);
+    }
 
+    let move_color = self.get_active_color();
+
+    let mut effective_move_color = move_color;
     if self.get_turn() == 1 {
         if let Move::Placement { kind, ..} = m {
-          if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::KindNotValid.into()) }
-        } else {
-          return Err(MoveInvalidReason::FirstMoveNotPlacement)
+          if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::StoneKindNotValid.into()) }
         }
         
-        move_color.swap();
+        effective_move_color.swap();
       }
 
     if let Move::Placement { kind, .. } = m {
-      if !self.held_stones.take_stone(kind, move_color) {
+      if !self.held_stones.take_stone(kind, effective_move_color) {
         return Err(PlacementInvalidReason::NoStoneAvailable.into());
       }
     }
 
-    self.board.make_move(&ColorMove { r#move: m, color: move_color } )?;
+    self.board.make_move(&ColorMove { r#move: m, color: effective_move_color } )?;
 
     self.moves += 1;
-    Ok(())
+    self.state = self.evaluate_state(move_color);
+    Ok(self.state)
   }
 
-  fn get_turn(&self) -> u32 {
+
+  fn evaluate_state(&self, last_move_color: Color) -> GameState {
+    if let Some(color) = self.board.check_road_win(last_move_color) {
+      GameState::Win(color, WinKind::Road)
+    } else {
+      let run_out = self.held_stones.side_has_run_out();
+      let all_occupied = self.board.all_spaces_occupied();
+
+      if run_out || all_occupied {
+        let win_kind = if run_out { WinKind::PlayedAllStones(last_move_color) } else { WinKind::BoardFilled };
+
+        let (white_controlled, black_controlled) = self.board.count_flats_control();
+        if white_controlled > black_controlled {
+          GameState::Win(Color::White, win_kind)
+        } else if black_controlled > white_controlled {
+          GameState::Win(Color::Black, win_kind)
+        } else {
+          GameState::Draw
+        }
+      } else {
+        GameState::Ongoing
+      }
+    }
+  }
+
+  pub fn get_turn(&self) -> u32 {
     self.moves / 2 + 1
   }
 
-  fn get_active_color(&self) -> Color {
+  pub fn get_active_color(&self) -> Color {
     match self.moves % 2 {
       0 => Color::White,
       1 => Color::Black,
       _ => unreachable!()
     }
+  }
+
+  pub fn get_state(&self) -> GameState {
+    self.state
   }
 
 }
@@ -628,6 +832,22 @@ impl Stone {
 
     apply_color(&c.to_string(), self.color)    
   }
+
+  // TODO temp
+  fn basic_notation(&self) -> String {
+    let color_char = match self.color {
+      Color::White => 'w',
+      Color::Black => 'b'
+    };
+
+    let kind_char = match self.kind {
+      StoneKind::FlatStone => STONE_CHARS[0],
+      StoneKind::StandingStone => STONE_CHARS[1],
+      StoneKind::Capstone => STONE_CHARS[2]
+    };
+
+    format!("{}{}", color_char, kind_char)
+  }
 }
 
 impl fmt::Display for StoneStack {
@@ -716,6 +936,34 @@ impl fmt::Display for Board {
   }
 }
 
+use std::fmt::Write;
+
+impl StoneStack {
+  // TODO temp
+  fn basic_notation(&self) -> String {
+    let mut out = String::new();
+    for stone in &self.0 {
+      write!(out, "{}", stone.basic_notation()).unwrap();
+    }
+
+    out
+  }
+}
+
+impl Board {
+  // TODO temp
+  fn basic_notation(&self) -> String {
+    let mut out = String::new();
+
+    let stack_notations = self.stacks.iter().map(|stack| stack.basic_notation());
+    for stack in stack_notations {
+      write!(out, "{};", stack).unwrap();
+    }
+
+    out
+  }
+}
+
 impl fmt::Display for Game {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "{}", self.board)?;
@@ -726,5 +974,38 @@ impl fmt::Display for Game {
       self.held_stones.white.capstone, 
       self.held_stones.black.flat, 
       self.held_stones.black.capstone)
+  }
+}
+
+impl Game {
+  // TODO temp
+  pub fn basic_notation(&self) -> String {
+    let mut out = String::new();
+    write!(out, "{}", self.board.basic_notation()).unwrap();
+    write!(out, "S{}T{},A{},WF{}C{},BF{}C{}",
+      match self.state {
+        GameState::Ongoing => "O".to_string(),
+        GameState::Draw => "D".to_string(),
+        GameState::Win(color, kind) => format!("W{}{}", 
+          match color {
+            Color::White => 'W',
+            Color::Black => 'B',
+          }, match kind {
+            WinKind::Road => 'R',
+            WinKind::BoardFilled => 'F',
+            WinKind::PlayedAllStones(_color) => 'F'
+          })
+      },
+      self.get_turn(),
+      match self.get_active_color() {
+        Color::White => 'W',
+        Color::Black => 'B',
+      },
+      self.held_stones.white.flat, 
+      self.held_stones.white.capstone, 
+      self.held_stones.black.flat, 
+      self.held_stones.black.capstone).unwrap();
+
+    out
   }
 }
