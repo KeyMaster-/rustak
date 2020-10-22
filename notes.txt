@@ -29,6 +29,8 @@ x Add bounded integer crate and use it for size and position values
     Did require patching bounded-integer though, since it added ops for unsigned types even though the underlying type does not support those ops.
     Namely saturating neg and all variations of abs.
 
+. Maybe separate out the binary and library of this, since the binary has a few dependencies that the library doesn't need.
+
 # Rules
 x implement carry limit
 x win checking

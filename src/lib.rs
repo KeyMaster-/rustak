@@ -3,6 +3,9 @@ use grid::Grid;
 use thiserror::Error;
 use bounded_integer::bounded_integer;
 
+#[cfg(feature = "serde_support")]
+use serde::{Serialize, Deserialize};
+
 pub mod parse;
 
 bounded_integer! {
@@ -18,6 +21,7 @@ const RANK_CHARS: &str = "12345678";
 // y is the rank, i.e. the numbered direction
 // note that x and y are 0-indexed, while ranks are 1-indexed
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Location {
   x: usize,
   y: usize
@@ -53,6 +57,7 @@ impl Location {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum StoneKind {
   FlatStone,
   StandingStone,
@@ -84,6 +89,7 @@ impl StoneKind {
 }
 
 #[derive(Debug, Copy, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Direction {
   Up,
   Down,
@@ -92,6 +98,7 @@ pub enum Direction {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Move {
   Placement { kind: StoneKind, location: Location },
   Movement { start: Location, direction: Direction, drops: Vec<usize> }
@@ -103,6 +110,7 @@ pub struct ColorMove {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Color {
   White,
   Black
@@ -122,6 +130,7 @@ impl Color {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Stone {
   kind: StoneKind,
   color: Color
@@ -143,6 +152,7 @@ impl Stone {
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct StoneStack(Vec<Stone>);
 
 #[derive(Error, Debug)]
@@ -170,7 +180,7 @@ impl StoneStack {
     Ok(Self(stones))
   }
 
-  fn count(&self) -> usize {
+  pub fn count(&self) -> usize {
     self.0.len()
   }
 
@@ -223,13 +233,75 @@ impl StoneStack {
 
 // The actual state on the board
 #[derive(Debug, Eq, PartialEq, Clone)]
-struct Board {
+pub struct Board {
   stacks: Grid<StoneStack>,
   size: BoardSize
 }
 
+// Doing an impl on board instead of Grid since Grid would equire a newtype
+// Also, we want to omit the board size anyway, and check the provided sequence
+// length during deserialization
+#[cfg(feature = "serde_support")]
+impl Serialize for Board {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: serde::Serializer,
+  {
+    serializer.collect_seq(self.stacks.flatten())
+  }
+}
+
+#[cfg(feature = "serde_support")]
+struct BoardVisitor;
+
+#[cfg(feature = "serde_support")]
+impl<'de> serde::de::Visitor<'de> for BoardVisitor {
+  type Value = Board;
+
+  fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    write!(formatter, "a sequence of stone stacks of length ")?;
+    for s in BoardSize::MIN_VALUE..=BoardSize::MAX_VALUE {
+      write!(formatter, "{}", s*s)?;
+      if s == BoardSize::MAX_VALUE - 1 {
+        write!(formatter, ", or ")?;
+      } else if s != BoardSize::MAX_VALUE {
+        write!(formatter, ", ")?;
+      }
+    }
+    Ok(())
+  }
+
+  fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+  where
+    A: serde::de::SeqAccess<'de>
+  {
+    let mut stacks = Vec::new();
+    while let Some(stack) = seq.next_element()? {
+      stacks.push(stack);
+    }
+
+    let stacks_len = stacks.len();
+
+    Ok(Board::from_data(stacks).map_err(|_| serde::de::Error::invalid_length(stacks_len, &self))?)
+  }
+}
+#[cfg(feature = "serde_support")]
+impl<'de> Deserialize<'de> for Board {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> 
+  where
+    D: serde::Deserializer<'de>
+  {
+    deserializer.deserialize_seq(BoardVisitor)
+  }
+  //deserialize sequence of stonestacks
+  //build boardsize from sqrt(len) (convenience method for that on baord size?)
+  // return err if boardsize errors
+  //build grid out of sequence
+  //return self with sequence and boardsize
+}
+
 impl Board {
-  fn new(size: BoardSize) -> Self {
+  pub fn new(size: BoardSize) -> Self {
     let size_prim = size.get();
     Self {
       stacks: Grid::new(size_prim, size_prim),
@@ -237,7 +309,7 @@ impl Board {
     }
   }
 
-  fn from_data(stacks: Vec<StoneStack>) -> Result<Self, ()> {
+  pub fn from_data(stacks: Vec<StoneStack>) -> Result<Self, ()> {
     let size = (stacks.len() as f64).sqrt();
     if size.fract() != 0.0 {
       return Err(());
@@ -250,8 +322,20 @@ impl Board {
       size
     })
   }
+
+  pub fn get(&self, x: usize, y: usize) -> &StoneStack {
+    &self.stacks[y][x]
+  }
 }
 
+impl core::ops::Index<Location> for Board {
+  type Output = StoneStack;
+  fn index(&self, loc: Location) -> &Self::Output {
+    &self.stacks[loc]
+  }
+}
+
+// Clone constraint is required by Grid itself
 impl<T: Clone> core::ops::Index<Location> for Grid<T> {
   type Output = T;
   fn index(&self, loc: Location) -> &Self::Output {
@@ -483,6 +567,7 @@ impl Sides {
 
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 struct HeldStones {
   flat: u8,
   capstone: u8
@@ -528,6 +613,7 @@ impl HeldStones {
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 struct GameHeldStones {
   white: HeldStones,
   black: HeldStones
@@ -555,6 +641,7 @@ impl GameHeldStones {
 
 // The state of a game
 #[derive(Debug, Eq, PartialEq, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Game {
   board: Board,
   held_stones: GameHeldStones,
@@ -571,6 +658,7 @@ pub enum GameFromDataError {
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum WinKind {
   Road,
   BoardFilled,
@@ -578,6 +666,7 @@ pub enum WinKind {
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum GameState {
   Ongoing,
   Win(Color, WinKind),
@@ -670,10 +759,10 @@ impl Game {
       return Err(MoveInvalidReason::GameHasEnded);
     }
 
-    let move_color = self.get_active_color();
+    let move_color = self.active_color();
 
     let mut effective_move_color = move_color;
-    if self.get_turn() == 1 {
+    if self.turn() == 1 {
         if let Move::Placement { kind, ..} = m {
           if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::StoneKindNotValid.into()) }
         }
@@ -719,11 +808,11 @@ impl Game {
     }
   }
 
-  pub fn get_turn(&self) -> u32 {
+  pub fn turn(&self) -> u32 {
     self.moves / 2 + 1
   }
 
-  pub fn get_active_color(&self) -> Color {
+  pub fn active_color(&self) -> Color {
     match self.moves % 2 {
       0 => Color::White,
       1 => Color::Black,
@@ -731,8 +820,12 @@ impl Game {
     }
   }
 
-  pub fn get_state(&self) -> GameState {
+  pub fn state(&self) -> GameState {
     self.state
+  }
+
+  pub fn board(&self) -> &Board {
+    &self.board
   }
 
 }
@@ -968,8 +1061,8 @@ impl fmt::Display for Game {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "{}", self.board)?;
     write!(f, "Turn {}, {} | W: {}F {}C, B: {}F {}C", 
-      self.get_turn(),
-      apply_color(&self.get_active_color().to_string(), self.get_active_color()),
+      self.turn(),
+      apply_color(&self.active_color().to_string(), self.active_color()),
       self.held_stones.white.flat, 
       self.held_stones.white.capstone, 
       self.held_stones.black.flat, 
@@ -996,8 +1089,8 @@ impl Game {
             WinKind::PlayedAllStones(_color) => 'F'
           })
       },
-      self.get_turn(),
-      match self.get_active_color() {
+      self.turn(),
+      match self.active_color() {
         Color::White => 'W',
         Color::Black => 'B',
       },

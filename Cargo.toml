@@ -13,3 +13,8 @@ grid = "0.2"
 colored = "2"
 thiserror = "1"
 bounded-integer = { version = "0.2", path = "deps/bounded-integer" }
+
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[features]
+serde_support = ["serde", "bounded-integer/serde"]
