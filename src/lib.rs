@@ -16,6 +16,10 @@ bounded_integer! {
 const FILE_CHARS: &str = "abcdefgh";
 const RANK_CHARS: &str = "12345678";
 
+pub fn file_idx_to_char(idx: usize) -> Option<char> {
+  FILE_CHARS.chars().nth(idx)
+}
+
 // Location on the board
 // x is the file, i.e. the lettered direction
 // y is the rank, i.e. the numbered direction
@@ -132,8 +136,8 @@ impl Color {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct Stone {
-  kind: StoneKind,
-  color: Color
+  pub kind: StoneKind,
+  pub color: Color
 }
 
 impl Stone {
@@ -226,7 +230,7 @@ impl StoneStack {
     }
   }
 
-  fn iter(&self) -> std::slice::Iter<Stone> {
+  pub fn iter(&self) -> std::slice::Iter<Stone> {
     self.0.iter()
   }
 }
@@ -323,8 +327,13 @@ impl Board {
     })
   }
 
-  pub fn get(&self, x: usize, y: usize) -> &StoneStack {
+  // TODO turn into Index trait similar to what Grid does with Index<usize>
+  pub fn get(&self, x: usize, y: usize) -> &StoneStack { 
     &self.stacks[y][x]
+  }
+
+  pub fn size(&self) -> BoardSize {
+    self.size
   }
 }
 
@@ -568,7 +577,7 @@ impl Sides {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
-struct HeldStones {
+pub struct HeldStones {
   flat: u8,
   capstone: u8
 }
@@ -610,11 +619,19 @@ impl HeldStones {
   fn has_run_out(&self) -> bool {
     self.flat == 0 && self.capstone == 0
   }
+
+  pub fn flat(&self) -> u8 {
+    self.flat
+  }
+
+  pub fn capstone(&self) -> u8 {
+    self.capstone
+  }
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
-struct GameHeldStones {
+pub struct GameHeldStones {
   white: HeldStones,
   black: HeldStones
 }
@@ -636,6 +653,13 @@ impl GameHeldStones {
 
   fn side_has_run_out(&self) -> bool {
     self.white.has_run_out() || self.black.has_run_out()
+  }
+
+  pub fn get(&self, color: Color) -> HeldStones {
+    match color {
+      Color::White => self.white,
+      Color::Black => self.black
+    }
   }
 }
 
@@ -828,13 +852,17 @@ impl Game {
     &self.board
   }
 
+  pub fn held_stones(&self) -> GameHeldStones {
+    self.held_stones
+  }
+
 }
 
 // Display impls
 
 impl fmt::Display for Location {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let file = FILE_CHARS.chars().nth(self.x as usize).unwrap();
+    let file = file_idx_to_char(self.x as usize).unwrap();
     let rank = self.y + 1;
     write!(f, "{}{}", file, rank)
   }
@@ -1005,7 +1033,7 @@ impl fmt::Display for Board {
 
     let file_cells: Vec<_> = 
       col_widths.iter()
-      .zip((0..size).map(|col_idx| FILE_CHARS.chars().nth(col_idx).unwrap()))
+      .zip((0..size).map(|col_idx| file_idx_to_char(col_idx).unwrap()))
       .map(|(&width, file_char)| format!("{:^width$}", file_char, width = width))
       .collect();
 
