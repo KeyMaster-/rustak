@@ -30,6 +30,21 @@ x Add bounded integer crate and use it for size and position values
     Namely saturating neg and all variations of abs.
 
 . Maybe separate out the binary and library of this, since the binary has a few dependencies that the library doesn't need.
+. Remove vendored bounded integer library
+. Move board into its own module
+  This makes things more organised, and also enforces using the board's 
+  public interface for manipulating it.
+
+# Move builder
+- make move builder separate object, or part of the game?
+  move builder needs access to board and stones. turn and state is technically only needed when committing a move.
+  when we commit a move, we already have the changed board&pieces state. if separate, need to copy back.
+  with granular undo, don't need to keep a copy of the old state.
+  Make it part of the game object I think.
+
+- now that move logic moves outside of the board struct, need to provide additional accessors to mutate it.
+  get mutable stone stack at location, mainly
+
 
 # Rules
 x implement carry limit

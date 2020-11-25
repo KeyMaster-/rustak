@@ -92,7 +92,7 @@ impl StoneKind {
   }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Direction {
   Up,
@@ -644,10 +644,16 @@ impl GameHeldStones {
     }
   }
 
-  fn take_stone(&mut self, kind: StoneKind, color: Color) -> bool {
-    match color {
+  fn take_stone(&mut self, kind: StoneKind, color: Color) -> Option<Stone> {
+    let had_stone = match color {
       Color::White => self.white.take_stone(kind),
       Color::Black => self.black.take_stone(kind),
+    };
+
+    if had_stone {
+      Some(Stone { color, kind })
+    } else {
+      None
     }
   }
 
@@ -670,7 +676,8 @@ pub struct Game {
   board: Board,
   held_stones: GameHeldStones,
   state: GameState,
-  moves: u32
+  moves: u32,
+  move_state: MoveState
 }
 
 #[derive(Error, Debug)]
@@ -697,13 +704,51 @@ pub enum GameState {
   Draw
 }
 
+#[derive(Debug, Eq, PartialEq, Clone)]
+enum MoveState {
+  Start,
+  Placed { loc: Location },
+  MovementStart { loc: Location, carry: StoneStack },
+  MovementContinue { loc: Location, carry: StoneStack, dir: Direction, drops: Vec<usize> }
+}
+
+pub enum MoveAction {
+  Placement { loc: Location, kind: StoneKind },
+  Pickup { loc: Location, count: usize },
+  MoveAndDropOne { dir: Direction },
+  Drop { count: usize }
+}
+
+#[derive(Error, Debug, Eq, PartialEq)]
+pub enum ActionInvalidReason {
+  #[error("Action is not applicable to the current state")]
+  InvalidState, // TODO maybe add expected and observed state
+
+  #[error("The first move for each player must be a placement")]
+  FirstMoveMustBePlacement,
+
+  #[error("Game has ended")]
+  GameHasEnded,
+
+  #[error("The move start location is outside the board")]
+  MoveStartOutsideBoard, // TODO maybe report the location vs board size
+
+  #[error("Invalid placement action: {0}")]
+  PlacementInvalid(#[from] PlacementInvalidReason),
+
+  #[error("Invalid movement action: {0}")]
+  MovementInvalid(#[from] MovementInvalidReason),
+
+}
+
 impl Game {
   pub fn new(size: BoardSize) -> Self {
     Self {
       board: Board::new(size),
       held_stones: GameHeldStones::new(HeldStones::for_size(size)),
       state: GameState::Ongoing,
-      moves: 0
+      moves: 0,
+      move_state: MoveState::Start
     }
   }
 
@@ -760,52 +805,141 @@ impl Game {
       board: board,
       held_stones,
       moves,
-      state: GameState::Ongoing
+      state: GameState::Ongoing,
+      move_state: MoveState::Start
     };
 
     out.state = out.evaluate_state(Color::White);
     Ok(out)
   }
 
-  pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
+  pub fn do_action(&mut self, action: MoveAction) -> Result<(), ActionInvalidReason> {
     let mut game_clone = self.clone();
+    game_clone.do_action_internal(action)?;
 
-    let new_state = game_clone.internal_make_move(m)?;
-
-    // If we got here, the move was okay and applied to the cloned game.
+    // If we got here, the action was okay and was fully applied to the cloned game.
     // Now write the changes back to ourselves.
     *self = game_clone;
-    Ok(new_state)
+    Ok(())
   }
 
-  fn internal_make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
+  fn do_action_internal(&mut self, action: MoveAction) -> Result<(), ActionInvalidReason> {
+    use ActionInvalidReason::*;
+
     if self.state != GameState::Ongoing {
-      return Err(MoveInvalidReason::GameHasEnded);
+      return Err(ActionInvalidReason::GameHasEnded);
     }
 
-    let move_color = self.active_color();
+    match action {
+      MoveAction::Placement { loc, kind } => {
+        use PlacementInvalidReason::*;
 
-    let mut effective_move_color = move_color;
-    if self.turn() == 1 {
-        if let Move::Placement { kind, ..} = m {
-          if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::StoneKindNotValid.into()) }
+        if self.move_state != MoveState::Start { return Err(InvalidState); }
+
+        let mut stone_color = self.active_color();
+        if self.turn() == 1 {
+          if kind != StoneKind::FlatStone { return Err(StoneKindNotValid.into()); }
+          stone_color.swap();
         }
-        
-        effective_move_color.swap();
-      }
 
-    if let Move::Placement { kind, .. } = m {
-      if !self.held_stones.take_stone(kind, effective_move_color) {
-        return Err(PlacementInvalidReason::NoStoneAvailable.into());
+        let stone = self.held_stones.take_stone(kind, stone_color).ok_or(ActionInvalidReason::from(NoStoneAvailable))?;
+
+        if !self.board.loc_inside(&loc) { return Err(MoveStartOutsideBoard); }
+        let stack = &mut self.board.stacks[loc];
+        stone.place_onto(stack).map_err(|_| ActionInvalidReason::from(SpaceOccupied))?;
+
+        self.move_state = MoveState::Placed { loc };
+        Ok(())
+      },
+      MoveAction::Pickup { loc, count } => {
+        use MovementInvalidReason::*;
+
+        if self.move_state != MoveState::Start { return Err(InvalidState); }
+        if self.turn() == 1 { return Err(FirstMoveMustBePlacement); }
+
+        if !self.board.loc_inside(&loc) { return Err(MoveStartOutsideBoard); }
+
+        let active_color = self.active_color(); // cache this because we can't borrow self again after we borrow the stack
+
+        let stack = &mut self.board.stacks[loc];
+        match stack.controlling_color() {
+          None => return Err(SpaceEmpty.into()),
+          Some(controlling_color) => if active_color != controlling_color { return Err(StartNotControlled.into()); }
+        }
+
+        if count > self.board.size.get() { return Err(PickupTooLarge.into()); }
+        let carry = stack.take(count).map_err(|_| ActionInvalidReason::from(PickupTooLarge))?;
+
+        self.move_state = MoveState::MovementStart { loc, carry };
+
+        Ok(())
+      },
+      MoveAction::MoveAndDropOne { dir } => {
+        if !(matches!(self.move_state, MoveState::MovementStart { .. }) || matches!(self.move_state, MoveState::MovementContinue { .. })) { return Err(InvalidState); }
+
+        let (loc, carry) = match self.move_state {
+          MoveState::MovementStart { loc, carry } => (loc, carry.clone()),
+          MoveState::MovementContinue { loc, carry, .. } => (loc, carry.clone()),
+          _ => unreachable!()
+        };
+
+        if let MoveState::MovementContinue { loc, carry, dir, drops } = self.move_state {
+          
+        }
+
+        Ok(())
+      },
+      MoveAction::Drop { count } => {
+        if !(matches!(self.move_state, MoveState::MovementStart { .. }) || matches!(self.move_state, MoveState::MovementContinue { .. })) { return Err(InvalidState); }
+
+        Ok(())
       }
     }
-
-    self.board.make_move(&ColorMove { r#move: m, color: effective_move_color } )?;
-
-    self.moves += 1;
-    self.state = self.evaluate_state(move_color);
-    Ok(self.state)
   }
+
+  pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
+    Ok(GameState::Ongoing)
+  }
+
+  // pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
+  //   let mut game_clone = self.clone();
+
+  //   let new_state = game_clone.internal_make_move(m)?;
+
+  //   // If we got here, the move was okay and applied to the cloned game.
+  //   // Now write the changes back to ourselves.
+  //   *self = game_clone;
+  //   Ok(new_state)
+  // }
+
+  // fn internal_make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
+  //   if self.state != GameState::Ongoing {
+  //     return Err(MoveInvalidReason::GameHasEnded);
+  //   }
+
+  //   let move_color = self.active_color();
+
+  //   let mut effective_move_color = move_color;
+  //   if self.turn() == 1 {
+  //       if let Move::Placement { kind, ..} = m {
+  //         if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::StoneKindNotValid.into()) }
+  //       }
+        
+  //       effective_move_color.swap();
+  //     }
+
+  //   if let Move::Placement { kind, .. } = m {
+  //     if !self.held_stones.take_stone(kind, effective_move_color) {
+  //       return Err(PlacementInvalidReason::NoStoneAvailable.into());
+  //     }
+  //   }
+
+  //   self.board.make_move(&ColorMove { r#move: m, color: effective_move_color } )?;
+
+  //   self.moves += 1;
+  //   self.state = self.evaluate_state(move_color);
+  //   Ok(self.state)
+  // }
 
 
   fn evaluate_state(&self, last_move_color: Color) -> GameState {
