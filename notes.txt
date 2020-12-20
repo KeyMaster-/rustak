@@ -44,6 +44,15 @@ x Add bounded integer crate and use it for size and position values
 
 - now that move logic moves outside of the board struct, need to provide additional accessors to mutate it.
   get mutable stone stack at location, mainly
+  Turned out that I didn't need this - since everything is in the same module atm all the code has access to all the struct internals
+
+. Action undo
+
+## Cleanup
+. Clean out board's make_move and related unused types/functions
+. Clean up commented-out old code (e.g. old game make_move)
+. Sort out the ActionInvalidReason / MoveInvalidReason difference
+  Some errors don't make sense for move - keep having separate types + panic on implementation errors?
 
 
 # Rules
@@ -105,3 +114,6 @@ Movement
   Locations
     . Start move outside board
     . Move out of board
+
+Move actions
+  . // TODO
