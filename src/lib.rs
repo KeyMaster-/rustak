@@ -54,10 +54,22 @@ impl Location {
     Sides::new(self.x == 0, self.y == board_size.get() - 1, self.x == board_size.get() - 1, self.y == 0)
   }
 
-  fn neighbours(&self, board_size: BoardSize) -> Vec<Self> {
+  pub fn neighbours(&self, board_size: BoardSize) -> Vec<Self> {
     use Direction::*;
-    [self.move_along(Left, board_size), self.move_along(Up, board_size), self.move_along(Right, board_size), self.move_along(Down, board_size)].iter().filter_map(|&loc| loc).collect()
+    [Left, Up, Right, Down].iter().map(|&dir| self.move_along(dir, board_size)).filter_map(|loc| loc).collect()
+    // [self.move_along(Left, board_size), self.move_along(Up, board_size), self.move_along(Right, board_size), self.move_along(Down, board_size)].iter().filter_map(|&loc| loc).collect()
   }
+
+  pub fn neighbours_with_direction(&self, board_size: BoardSize) -> Vec<(Self, Direction)> {
+    use Direction::*;
+    [Left, Up, Right, Down].iter()
+      .map(|&dir| (self.move_along(dir, board_size), dir))
+      .filter_map(|(loc, dir)| if let Some(loc) = loc { Some((loc, dir)) } else { None })
+      .collect()
+  }
+
+  pub fn x(&self) -> usize { self.x }
+  pub fn y(&self) -> usize { self.y }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -205,7 +217,7 @@ impl StoneStack {
     Ok(bot_stack)
   }
 
-  fn top_stone(&self) -> Option<Stone> {
+  pub fn top_stone(&self) -> Option<Stone> {
     self.0.last().copied()
   }
 
@@ -712,14 +724,14 @@ pub enum GameState {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
-enum MoveState {
+pub enum MoveState {
   Start,
-  Placed { loc: Location },
-  Movement { loc: Location, carry: StoneStack, dir: Option<Direction>, drops: Vec<usize> }
+  Placed { loc: Location, kind: StoneKind },
+  Movement { start: Location, cur_loc: Location, carry: StoneStack, dir: Option<Direction>, drops: Vec<usize> }
 }
 
 pub enum MoveAction {
-  Placement { loc: Location, kind: StoneKind },
+  Place { loc: Location, kind: StoneKind },
   Pickup { loc: Location, count: usize },
   MoveAndDropOne { dir: Direction },
   Drop { count: usize }
@@ -835,6 +847,7 @@ impl Game {
     Ok(())
   }
 
+    // TODO can be local closure in do_action
   fn do_action_internal(&mut self, action: MoveAction) -> Result<(), ActionInvalidReason> {
     use ActionInvalidReason::*;
 
@@ -843,7 +856,7 @@ impl Game {
     }
 
     match action {
-      MoveAction::Placement { loc, kind } => {
+      MoveAction::Place { loc, kind } => {
         use PlacementInvalidReason::*;
 
         if self.move_state != MoveState::Start { return Err(InvalidState); }
@@ -860,7 +873,7 @@ impl Game {
         let stack = &mut self.board.stacks[loc];
         stone.place_onto(stack).map_err(|_| ActionInvalidReason::from(SpaceOccupied))?;
 
-        self.move_state = MoveState::Placed { loc };
+        self.move_state = MoveState::Placed { loc, kind };
         Ok(())
       },
       MoveAction::Pickup { loc, count } => {
@@ -882,25 +895,25 @@ impl Game {
         if count > self.board.size.get() { return Err(PickupTooLarge.into()); }
         let carry = stack.take(count).map_err(|_| ActionInvalidReason::from(PickupTooLarge))?;
 
-        self.move_state = MoveState::Movement { loc, carry, dir: None, drops: vec![] };
+        self.move_state = MoveState::Movement { start: loc, cur_loc: loc, carry, dir: None, drops: vec![] };
 
         Ok(())
       },
       MoveAction::MoveAndDropOne { dir } => {
         use MovementInvalidReason::*;
 
-        if let MoveState::Movement { loc, carry, dir: dir_opt, drops} = &mut self.move_state {
+        if let MoveState::Movement { cur_loc, carry, dir: state_dir, drops, .. } = &mut self.move_state {
 
-          if let &mut Some(state_dir) = dir_opt {
+          if let &mut Some(state_dir) = state_dir {
             if state_dir != dir { return Err(MovementDirMismatch); }
           } else {
-            *dir_opt = Some(dir);
+            *state_dir = Some(dir);
           }
 
-          *loc = loc.move_along(dir, self.board.size()).ok_or(ActionInvalidReason::from(MoveOutsideBoard))?;
+          *cur_loc = cur_loc.move_along(dir, self.board.size()).ok_or(ActionInvalidReason::from(MoveOutsideBoard))?;
 
           let drop_stack = carry.drop_stones(1).map_err(|_| DropTooLarge)?;
-          let target_stack = &mut self.board.stacks[*loc];
+          let target_stack = &mut self.board.stacks[*cur_loc];
           drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
 
           drops.push(1);
@@ -913,20 +926,30 @@ impl Game {
       MoveAction::Drop { count } => {
         use MovementInvalidReason::*;
 
-        if let MoveState::Movement { loc, carry, dir: _, drops} = &mut self.move_state {
-          let drop_stack = carry.drop_stones(count).map_err(|_| DropTooLarge)?;
-          let target_stack = &mut self.board.stacks[*loc];
-          drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
+        let return_to_start = 
+          if let MoveState::Movement { cur_loc, carry, drops, .. } = &mut self.move_state {
+            let drop_stack = carry.drop_stones(count).map_err(|_| DropTooLarge)?;
+            let target_stack = &mut self.board.stacks[*cur_loc];
+            drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
 
-          let drops_len = drops.len(); // cache the length since we will need to know it while mutably borrowing `drops`, and `.len()` borrows drops again
-          if drops_len > 0 {
-            drops[drops_len - 1] += count;
-          }
+            let drops_len = drops.len(); // cache the length since we will need to know it while mutably borrowing `drops`, and `.len()` borrows drops again
+            if drops_len > 0 {
+              drops[drops_len - 1] += count;
+            }
 
-          Ok(())
-        } else {
-          Err(InvalidState)
+            if carry.count() == 0 && drops.len() == 0 {
+              true
+            } else {
+              false
+            }
+          } else {
+            return Err(InvalidState)
+          };
+
+        if return_to_start {
+          self.move_state = MoveState::Start;
         }
+        Ok(())
       }
     }
   }
@@ -973,7 +996,7 @@ impl Game {
 
     match m {
       Move::Placement { kind, location } => {
-        game_clone.do_action_internal(MoveAction::Placement { loc: location, kind: kind }).map_err(|e| action_to_move_reason(e))?;
+        game_clone.do_action_internal(MoveAction::Place { loc: location, kind: kind }).map_err(|e| action_to_move_reason(e))?;
       },
       Move::Movement { start, direction, drops } => {
         let pickup_count = drops.iter().sum();
@@ -1077,6 +1100,10 @@ impl Game {
     self.state
   }
 
+  pub fn move_state(&self) -> &MoveState {
+    &self.move_state
+  }
+
   pub fn board(&self) -> &Board {
     &self.board
   }
@@ -1085,6 +1112,22 @@ impl Game {
     self.held_stones
   }
 
+}
+
+impl MoveState {
+  pub fn to_move(self) -> Option<Move> {
+    match self {
+      Self::Start => None,
+      Self::Placed { loc, kind } => Some(Move::Placement { kind, location: loc }) ,
+      Self::Movement { start, cur_loc: _, carry, dir, drops } => {
+        if carry.count() == 0 && dir.is_some() && drops.len() > 0 { // TODO if expected invariants were strictly upheld by the type, carry.count() == 0 would be enough here
+          Some(Move::Movement { start, direction: dir.unwrap(), drops: drops })
+        } else {
+          None
+        }
+      },
+    }
+  }
 }
 
 // Display impls

@@ -53,7 +53,8 @@ x Add bounded integer crate and use it for size and position values
 . Clean up commented-out old code (e.g. old game make_move)
 . Sort out the ActionInvalidReason / MoveInvalidReason difference
   Some errors don't make sense for move - keep having separate types + panic on implementation errors?
-
+. Be consistent about variable naming (loc vs location) and order (loc/kind in MoveState, kind/loc in Move::Placement)
+. Be consistent about taking copy-able types by ref or by value (e.g. loc, dir, etc)
 
 # Rules
 x implement carry limit
