@@ -120,11 +120,6 @@ pub enum Move {
   Movement { start: Location, direction: Direction, drops: Vec<usize> }
 }
 
-pub struct ColorMove {
-  color: Color,
-  r#move: Move
-}
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Color {
@@ -203,11 +198,6 @@ impl StoneStack {
   fn take(&mut self, count: usize) -> Result<StoneStack, ()> {
     if count > self.count() { return Err(()) }
     Ok(StoneStack(self.0.split_off(self.count() - count)))
-  }
-
-  fn drop_split(mut self, count: usize) -> Result<(StoneStack, StoneStack), ()> {
-    let bot_stack = self.drop_stones(count)?;
-    Ok((bot_stack, self))
   }
 
   fn drop_stones(&mut self, count: usize) -> Result<StoneStack, ()> {
@@ -422,89 +412,37 @@ impl Board {
     loc.x < self.size.get() && loc.y < self.size.get()
   }
 
-  fn make_move(&mut self, m: &ColorMove)->Result<(), MoveInvalidReason> {
-    let ColorMove { color, r#move: m } = m;
-
-    match m {
-      Move::Placement { kind, location } => {
-        use PlacementInvalidReason::*;
-
-        if !self.loc_inside(location) { return Err(LocationOutsideBoard.into()) }
-        let stack = &mut self.stacks[*location];
-        Stone { kind: *kind, color: *color }.place_onto(stack).map_err(|_| SpaceOccupied.into())
-      },
-      Move::Movement { start, direction, drops } => {
-        use MovementInvalidReason::*;
-
-        if !self.loc_inside(start) { return Err(StartOutsideBoard.into()) }
-
-        let stack = &mut self.stacks[*start];
-
-        match stack.controlling_color() {
-          None => return Err(SpaceEmpty.into()),
-          Some(controlling_color) => if *color != controlling_color { return Err(StartNotControlled.into()) }
-        }
-
-        let pickup_count = drops.iter().sum();
-        if pickup_count > self.size.get() {
-          return Err(PickupTooLarge.into());
-        }
-
-        let mut carry_stack = stack.take(pickup_count).map_err(|_| MoveInvalidReason::from(PickupTooLarge))?;
-        let mut drop_loc = *start;
-
-        for &drop_count in drops {
-          drop_loc = drop_loc.move_along(*direction, self.size).ok_or(MoveOutsideBoard)?;
-          let target_stack = &mut self.stacks[drop_loc];
-
-          let (drop_stack, new_carry_stack) = carry_stack.drop_split(drop_count).unwrap();
-          carry_stack = new_carry_stack;
-          drop_stack.move_onto(target_stack).map_err(|_| MoveInvalidReason::from(DropNotAllowed))?;
-        }
-
-        Ok(())
-      }
-    }
-  }
-
-
   fn check_road_win(&self, last_move_color: Color) -> Option<Color> {
-    let size_prim = self.size.get();
-    let mut board_locs_to_process = Vec::with_capacity(size_prim * size_prim);
-    for x in 0..size_prim {
-      for y in 0..size_prim {
+    let size = self.size.get();
+    let mut board_locs_to_process = Vec::with_capacity(size * size);
+    for x in 0..size {
+      for y in 0..size {
         board_locs_to_process.push(Location::from_coords(x, y).unwrap());
       }
     }
 
-    let mut components: Vec<(Color, Sides)> = Vec::new();
+    let road_stone_at_loc = |loc: Location| -> Option<Stone> {
+      (&self.stacks[loc]).top_stone().and_then(|stone| if stone.kind.counts_for_road() { Some(stone) } else { None } )
+    };
 
+    let mut components: Vec<(Color, Sides)> = Vec::new();
     while let Some(loc) = board_locs_to_process.pop() {
-      let stack = &self.stacks[loc];
-      let top_stone = stack.top_stone();
-      if top_stone.is_none() { continue; }
-      let top_stone = top_stone.unwrap();
-      if !top_stone.kind.counts_for_road() { continue; }
+      let component_color = if let Some(stone) = road_stone_at_loc(loc) { stone.color } else { continue; };
 
       let mut component_touched_sides = Sides::none();
       let mut component_locs_to_process = vec![loc];
 
       while let Some(loc) = component_locs_to_process.pop() {
         let touching = loc.touching_sides(self.size);
-        component_touched_sides.or(&touching);
+        component_touched_sides.add(&touching);
 
         for neighbour in loc.neighbours(self.size) {
-            // TODO this is a copy of the main stack check above, probably worth factoring out
-          let neighbour_stack = &self.stacks[neighbour];
-          let neighbour_stone = neighbour_stack.top_stone();
-          if neighbour_stone.is_none() { continue; }
-          let neighbour_stone = neighbour_stone.unwrap();
-          if !neighbour_stone.kind.counts_for_road() { continue; }
-          if neighbour_stone.color != top_stone.color { continue; }
+          let neighbour_color = if let Some(stone) = road_stone_at_loc(neighbour) { stone.color } else { continue; };
+          if neighbour_color != component_color { continue; }
 
-          // the neighbour counts for walls, and is of the same color, so it belongs to this component.
+          // the neighbour counts for roads, and is of the same color, so it belongs to this component.
           // if this position is still in the global consider list, remove it from there and add it to the component's consider list.
-          // This also avoids adding duplicate positions to the component's consider list.
+          // This also avoids adding duplicate positions to the component's consider list, since the global list only has one instance of each location
           if let Some(idx) = board_locs_to_process.iter().position(|&other| other == neighbour) {
             board_locs_to_process.swap_remove(idx);
             component_locs_to_process.push(neighbour);
@@ -512,7 +450,7 @@ impl Board {
         }
       }
 
-      components.push((top_stone.color, component_touched_sides));
+      components.push((component_color, component_touched_sides));
     }
 
     let mut white_win = false;
@@ -535,17 +473,6 @@ impl Board {
     } else {
       None
     }
-
-    // Grab the first one.
-    //   If a road-participating stone, make new component, tag with stone's colour. Add stone to "to process" stack of that component.
-    //   Grab next stone in component's to process stack. find all neighbours, add any that are connected to this component and not already on processing stack. remove them from the global to-process set.
-    //   For each that's added, check what board edges it neighbours if any. Set a corresponding flag on the component.
-    // When the component's stack is done, that's one component fully explored. Grab new space from global "to process" set and make a new component, until the set is empty.
-    // Now, go through all components found. for each check if they have both top+bottom or left+right set. If either, that's a winning road. Set a win flag for that colour.
-    // After looking at all components, check winner flags. 
-    //  If none are set, no win
-    //  If one is set, that colour winds
-    //  If both are set, the last move created roads for both players. last_move_color wins.
   }
 
   fn all_spaces_occupied(&self) -> bool {
@@ -584,7 +511,7 @@ impl Sides {
     self.left && self.right || self.top && self.bot
   }
 
-  fn or(&mut self, other: &Sides) {
+  fn add(&mut self, other: &Sides) {
     self.left  |= other.left;
     self.top   |= other.top;
     self.right |= other.right;
@@ -977,19 +904,12 @@ impl Game {
 
       match action_reason {
         InvalidState => panic!("make_move tried to do an action on an invalid state"),
-
         FirstMoveMustBePlacement => MovementInvalidReason::SpaceEmpty.into(),
-
         GameHasEnded => MoveInvalidReason::GameHasEnded,
-
         MoveStartOutsideBoard => MovementInvalidReason::StartOutsideBoard.into(), // technically could have been a placement as well
-
         MovementDirMismatch => panic!("make_move gave a mismatching direction during a move"),
-
         DropTooLarge => panic!("make_move tried to drop more stones than it picked up"),
-
         PlacementInvalid(reason) => reason.into(),
-
         MovementInvalid(reason) => reason.into(),
       }
     }
@@ -1018,47 +938,6 @@ impl Game {
     *self = game_clone;
     Ok(self.state)
   }
-
-  // pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
-  //   let mut game_clone = self.clone();
-
-  //   let new_state = game_clone.internal_make_move(m)?;
-
-  //   // If we got here, the move was okay and applied to the cloned game.
-  //   // Now write the changes back to ourselves.
-  //   *self = game_clone;
-  //   Ok(new_state)
-  // }
-
-  // fn internal_make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
-  //   if self.state != GameState::Ongoing {
-  //     return Err(MoveInvalidReason::GameHasEnded);
-  //   }
-
-  //   let move_color = self.active_color();
-
-  //   let mut effective_move_color = move_color;
-  //   if self.turn() == 1 {
-  //       if let Move::Placement { kind, ..} = m {
-  //         if kind != StoneKind::FlatStone { return Err(PlacementInvalidReason::StoneKindNotValid.into()) }
-  //       }
-        
-  //       effective_move_color.swap();
-  //     }
-
-  //   if let Move::Placement { kind, .. } = m {
-  //     if !self.held_stones.take_stone(kind, effective_move_color) {
-  //       return Err(PlacementInvalidReason::NoStoneAvailable.into());
-  //     }
-  //   }
-
-  //   self.board.make_move(&ColorMove { r#move: m, color: effective_move_color } )?;
-
-  //   self.moves += 1;
-  //   self.state = self.evaluate_state(move_color);
-  //   Ok(self.state)
-  // }
-
 
   fn evaluate_state(&self, last_move_color: Color) -> GameState {
     if let Some(color) = self.board.check_road_win(last_move_color) {
