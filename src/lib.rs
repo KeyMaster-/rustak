@@ -57,7 +57,6 @@ impl Location {
   pub fn neighbours(&self, board_size: BoardSize) -> Vec<Self> {
     use Direction::*;
     [Left, Up, Right, Down].iter().map(|&dir| self.move_along(dir, board_size)).filter_map(|loc| loc).collect()
-    // [self.move_along(Left, board_size), self.move_along(Up, board_size), self.move_along(Right, board_size), self.move_along(Down, board_size)].iter().filter_map(|&loc| loc).collect()
   }
 
   pub fn neighbours_with_direction(&self, board_size: BoardSize) -> Vec<(Self, Direction)> {
@@ -200,7 +199,7 @@ impl StoneStack {
     Ok(StoneStack(self.0.split_off(self.count() - count)))
   }
 
-  fn drop_stones(&mut self, count: usize) -> Result<StoneStack, ()> {
+  fn drop(&mut self, count: usize) -> Result<StoneStack, ()> {
     if count > self.count() { return Err(()); }
     let top_stack = Self(self.0.split_off(count));
     let bot_stack = std::mem::replace(self, top_stack);
@@ -236,6 +235,11 @@ impl StoneStack {
       other.0.append(&mut self.0);
       Ok(flatten)
     }
+  }
+
+  fn add_bottom(&mut self, mut other: StoneStack) {
+    other.0.append(&mut self.0);
+    *self = other
   }
 
   pub fn iter(&self) -> std::slice::Iter<Stone> {
@@ -524,20 +528,23 @@ impl Sides {
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub struct HeldStones {
   flat: u8,
-  capstone: u8
+  capstone: u8,
+  board_size: BoardSize,
 }
+
+const MAX_STONE_COUNTS: [HeldStones; 6] = [
+    // Need to construct the BoardSize enum directly instead of using ::new since this is a constant
+  HeldStones { flat: 10, capstone: 0, board_size: BoardSize(3) }, 
+  HeldStones { flat: 15, capstone: 0, board_size: BoardSize(4) },
+  HeldStones { flat: 21, capstone: 1, board_size: BoardSize(5) },
+  HeldStones { flat: 30, capstone: 1, board_size: BoardSize(6) },
+  HeldStones { flat: 40, capstone: 1, board_size: BoardSize(7) },
+  HeldStones { flat: 50, capstone: 2, board_size: BoardSize(8) },
+];
 
 impl HeldStones {
   fn for_size(size: BoardSize) -> Self {
-    match size.get() {
-      3 => Self { flat: 10, capstone: 0},
-      4 => Self { flat: 15, capstone: 0},
-      5 => Self { flat: 21, capstone: 1},
-      6 => Self { flat: 30, capstone: 1},
-      7 => Self { flat: 40, capstone: 1},
-      8 => Self { flat: 50, capstone: 2},
-      _ => unreachable!()
-    }
+    MAX_STONE_COUNTS[size.get() - BoardSize::MIN_VALUE]
   }
 
   fn take_stone(&mut self, kind: StoneKind) -> bool {
@@ -561,8 +568,42 @@ impl HeldStones {
     }
   }
 
+  fn give_stone(&mut self, kind: StoneKind) -> bool {
+    let max = MAX_STONE_COUNTS[self.board_size.get() - BoardSize::MIN_VALUE];
+
+    match kind {
+      StoneKind::FlatStone | StoneKind::StandingStone => {
+        if self.flat < max.flat {
+          self.flat += 1;
+          return true;
+        } else {
+          return false;
+        }
+      },
+      StoneKind::Capstone => {
+        if self.capstone < max.capstone {
+          self.capstone += 1;
+          return true;
+        } else {
+          return false;
+        }
+      }
+    }
+  }
+
   fn has_run_out(&self) -> bool {
     self.flat == 0 && self.capstone == 0
+  }
+
+  pub fn has(&self, kind: StoneKind) -> bool {
+    match kind {
+      StoneKind::FlatStone | StoneKind::StandingStone => {
+        self.flat != 0
+      },
+      StoneKind::Capstone => {
+        self.capstone != 0
+      }
+    }
   }
 
   pub fn flat(&self) -> u8 {
@@ -599,6 +640,13 @@ impl GameHeldStones {
       Some(Stone { color, kind })
     } else {
       None
+    }
+  }
+
+  fn give_stone(&mut self, stone: Stone) -> bool {
+    match stone.color {
+      Color::White => self.white.give_stone(stone.kind),
+      Color::Black => self.black.give_stone(stone.kind)
     }
   }
 
@@ -722,51 +770,14 @@ impl Game {
   pub fn from_data(stacks: Vec<StoneStack>, moves: u32) -> Result<Self, GameFromDataError> {
     let board = Board::from_data(stacks).map_err(|_| GameFromDataError::InvalidSize)?;
 
-    let stack_count_stones = |stack: &StoneStack, filter_color| {
-      stack.iter().fold((0,0), |(flats, caps), stone| {
-        if stone.color == filter_color {
-          if stone.kind == StoneKind::Capstone {
-            (flats, caps+1)
-          } else {
-            (flats+1, caps)
-          }
-        } else {
-          (flats, caps)
+    let mut held_stones = GameHeldStones::new(HeldStones::for_size(board.size));
+    for stack in board.stacks.iter() {
+      for stone in stack.iter() {
+        if !held_stones.give_stone(*stone) {
+          return Err(GameFromDataError::TooManyPiecesForSize);
         }
-      })
-    };
-
-    let count_stones = |stacks: std::slice::Iter<StoneStack>, color| {
-      stacks.fold((0, 0), 
-        |(flats, caps), stack| {
-          let (add_flats, add_caps) = stack_count_stones(stack, color);
-          (flats + add_flats, caps + add_caps)
-        })
-    };
-    
-    let (white_flats, white_caps) = count_stones(board.stacks.iter(), Color::White);
-    let (black_flats, black_caps) = count_stones(board.stacks.iter(), Color::Black);
-
-    let full_held_stones = HeldStones::for_size(board.size);
-    if white_flats > full_held_stones.flat || white_caps > full_held_stones.capstone ||
-       black_flats > full_held_stones.flat || black_caps > full_held_stones.capstone {
-        return Err(GameFromDataError::TooManyPiecesForSize);
+      }
     }
-
-    let white_held_stones = HeldStones {
-      flat: full_held_stones.flat - white_flats,
-      capstone: full_held_stones.capstone - white_caps
-    };
-
-    let black_held_stones = HeldStones {
-      flat: full_held_stones.flat - black_flats,
-      capstone: full_held_stones.capstone - black_caps
-    };
-
-    let held_stones = GameHeldStones {
-      white: white_held_stones,
-      black: black_held_stones
-    };
 
     let mut out = Self {
       board: board,
@@ -791,7 +802,6 @@ impl Game {
     Ok(())
   }
 
-    // TODO can be local closure in do_action
   fn do_action_internal(&mut self, action: MoveAction) -> Result<(), ActionInvalidReason> { // TODO return Option<Move> in Ok for the finalise case
     use ActionInvalidReason::*;
 
@@ -855,7 +865,7 @@ impl Game {
 
           *cur_loc = cur_loc.move_along(dir, self.board.size()).ok_or(ActionInvalidReason::from(MoveOutsideBoard))?;
 
-          let drop_stack = carry.drop_stones(1).map_err(|_| DropTooLarge)?;
+          let drop_stack = carry.drop(1).map_err(|_| DropTooLarge)?;
           let target_stack = &mut self.board.stacks[*cur_loc];
           let flattened = drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
 
@@ -870,7 +880,7 @@ impl Game {
         use MovementInvalidReason::*;
 
         if let MoveState::Movement { cur_loc, carry, drops, .. } = &mut self.move_state {
-          let drop_stack = carry.drop_stones(count).map_err(|_| DropTooLarge)?;
+          let drop_stack = carry.drop(count).map_err(|_| DropTooLarge)?;
           let target_stack = &mut self.board.stacks[*cur_loc];
           drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
 
@@ -900,6 +910,70 @@ impl Game {
     }
 
     Ok(())
+  }
+
+  pub fn undo(&mut self) -> bool {
+    let action = self.action_history.pop();
+    if action.is_none() { return false; }
+    let action = action.unwrap();
+
+    match action {
+      HistoryAction::Place => {
+        if let MoveState::Placed { loc, .. } = self.move_state {
+          let stack = &mut self.board.stacks[loc];
+          let pickup = stack.take(1).expect(&format!("No stone at {} to pick up while undoing placement.", loc));
+          let stone = pickup.top_stone().unwrap();
+          if !self.held_stones.give_stone(stone) {
+            panic!("Undoing placement of {:?} exceeded the held stones maximum.", stone);
+          }
+
+          self.move_state = MoveState::Start;
+        } else {
+          panic!("Tried to undo Place action but wasn't in Placed state");
+        }
+      },
+      HistoryAction::Pickup => {
+        if let MoveState::Movement { cur_loc, carry, .. } = self.move_state.clone() { // TODO see if we really need to clone here (not that it's a huge issue)
+          let target_stack = &mut self.board.stacks[cur_loc];
+          if let Err(_) = carry.move_onto(target_stack) {
+            panic!("Putting back the carry stack failed while undoing Pickup");
+          }
+
+          self.move_state = MoveState::Start;
+        } else {
+          panic!("Tried to undo Pickup action but wasn't in Movement state");
+        }
+      },
+      HistoryAction::MoveAndDropOne { flattened } => {
+        todo!()
+      },
+      HistoryAction::Drop { count } => {
+        if let MoveState::Movement { cur_loc, carry, drops, .. } = &mut self.move_state {
+          let target_stack = &mut self.board.stacks[*cur_loc];
+          let pickup = target_stack.take(count).expect(&format!("Stack at {} did not have {} stones to take.", cur_loc, count));
+          carry.add_bottom(pickup);
+
+          let reduced_to_zero = if let Some(last) = drops.last_mut() {
+            *last -= count;
+            *last == 0
+          } else {
+            false
+          };
+
+          if reduced_to_zero {
+            drops.pop();
+          }
+
+        } else {
+          panic!("Tried to undo Drop action but wasn't in Movement state");
+        }
+      },
+      HistoryAction::Finalise { prev_game_state, prev_move_state } => {
+        todo!()
+      }
+    }
+
+    true
   }
 
   pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
