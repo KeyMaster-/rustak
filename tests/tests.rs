@@ -7,6 +7,16 @@ fn game_from(i: Input) -> Result<Game, nom::Err<Error>> {
   finalise(Game::parse_state, i)
 }
 
+  // TODO clean this up to be an assert_eq-style macro that does nice printing of differences we find
+  // Maybe also just make it a single assert_game_eq macro that takes a bool for "ignore history"
+fn eq_no_history(a: &Game, b: &Game) -> bool {
+  a.board() == b.board() &&
+  a.held_stones() == b.held_stones() &&
+  a.state() == b.state() &&
+  a.moves() == b.moves() &&
+  a.move_state() == b.move_state()
+}
+
 #[derive(Error)]
 enum TestError {
   #[error("Failed to parse game state: {0}")]
@@ -41,16 +51,16 @@ fn first_round_swaps_colours() -> Result<(), TestError> {
   let mut game = Game::new(BoardSize::new(3).unwrap());
   
   game.make_move("a1".parse().unwrap())?;
-  assert_eq!(game, game_from("
+  assert!(eq_no_history(&game, &game_from("
     |  |||
     |  |||
-    |bf||| 1")?);
+    |bf||| 1")?));
 
   game.make_move("a2".parse().unwrap())?;
-  assert_eq!(game, game_from("
+  assert!(eq_no_history(&game, &game_from("
     |  |||
     |wf|||
-    |bf||| 2")?);
+    |bf||| 2")?));
 
   Ok(())
 }
@@ -69,12 +79,12 @@ fn capstone_flattens_standing_stone() -> Result<(), TestError> {
 
   game.make_move("a2-".parse().unwrap())?;
 
-  assert_eq!(game, game_from("
+  assert!(eq_no_history(&game, &game_from("
     |    |||||
     |    |||||
     |    |||||
     |    |||||
-    |bfwc||||| 3")?);
+    |bfwc||||| 3")?));
 
   Ok(())
 }

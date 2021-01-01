@@ -219,12 +219,12 @@ impl StoneStack {
     self.top_stone().map(|s| s.color)
   }
 
-  fn move_onto(mut self, other: &mut StoneStack) -> Result<(), ()> {
+  fn move_onto(mut self, other: &mut StoneStack) -> Result<bool, ()> {
     if self.count() == 0 {
-      Ok(())
+      Ok(false)
     } else if other.count() == 0 {
       *other = self;
-      Ok(())
+      Ok(false)
     } else {
       let self_bot = self.bot_stone().unwrap();
       let other_top = other.top_stone().unwrap();
@@ -234,7 +234,7 @@ impl StoneStack {
         other.0.last_mut().unwrap().kind = StoneKind::FlatStone;
       }
       other.0.append(&mut self.0);
-      Ok(())
+      Ok(flatten)
     }
   }
 
@@ -622,7 +622,8 @@ pub struct Game {
   held_stones: GameHeldStones,
   state: GameState,
   moves: u32,
-  move_state: MoveState
+  move_state: MoveState,
+  action_history: Vec<HistoryAction>,
 }
 
 #[derive(Error, Debug)]
@@ -657,11 +658,14 @@ pub enum MoveState {
   Movement { start: Location, cur_loc: Location, carry: StoneStack, dir: Option<Direction>, drops: Vec<usize> }
 }
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum MoveAction {
   Place { loc: Location, kind: StoneKind },
   Pickup { loc: Location, count: usize },
   MoveAndDropOne { dir: Direction },
-  Drop { count: usize }
+  Drop { count: usize },
+  Finalise,
 }
 
 #[derive(Error, Debug, Eq, PartialEq)]
@@ -689,7 +693,18 @@ pub enum ActionInvalidReason {
 
   #[error("Invalid movement action: {0}")]
   MovementInvalid(#[from] MovementInvalidReason),
+}
 
+// State about an action that needs to be stored such that, in combination with the 
+// MoveState at the time, the action can be undone
+#[derive(Debug, Eq, PartialEq, Clone)]
+#[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+enum HistoryAction {
+  Place,
+  Pickup,
+  MoveAndDropOne { flattened: bool },
+  Drop { count: usize },
+  Finalise { prev_game_state: GameState, prev_move_state: MoveState }
 }
 
 impl Game {
@@ -699,7 +714,8 @@ impl Game {
       held_stones: GameHeldStones::new(HeldStones::for_size(size)),
       state: GameState::Ongoing,
       moves: 0,
-      move_state: MoveState::Start
+      move_state: MoveState::Start,
+      action_history: vec![],
     }
   }
 
@@ -757,7 +773,8 @@ impl Game {
       held_stones,
       moves,
       state: GameState::Ongoing,
-      move_state: MoveState::Start
+      move_state: MoveState::Start,
+      action_history: vec![],
     };
 
     out.state = out.evaluate_state(Color::White);
@@ -775,7 +792,7 @@ impl Game {
   }
 
     // TODO can be local closure in do_action
-  fn do_action_internal(&mut self, action: MoveAction) -> Result<(), ActionInvalidReason> {
+  fn do_action_internal(&mut self, action: MoveAction) -> Result<(), ActionInvalidReason> { // TODO return Option<Move> in Ok for the finalise case
     use ActionInvalidReason::*;
 
     if self.state != GameState::Ongoing {
@@ -801,7 +818,7 @@ impl Game {
         stone.place_onto(stack).map_err(|_| ActionInvalidReason::from(SpaceOccupied))?;
 
         self.move_state = MoveState::Placed { loc, kind };
-        Ok(())
+        self.action_history.push(HistoryAction::Place);
       },
       MoveAction::Pickup { loc, count } => {
         use MovementInvalidReason::*;
@@ -823,8 +840,7 @@ impl Game {
         let carry = stack.take(count).map_err(|_| ActionInvalidReason::from(PickupTooLarge))?;
 
         self.move_state = MoveState::Movement { start: loc, cur_loc: loc, carry, dir: None, drops: vec![] };
-
-        Ok(())
+        self.action_history.push(HistoryAction::Pickup);
       },
       MoveAction::MoveAndDropOne { dir } => {
         use MovementInvalidReason::*;
@@ -841,98 +857,86 @@ impl Game {
 
           let drop_stack = carry.drop_stones(1).map_err(|_| DropTooLarge)?;
           let target_stack = &mut self.board.stacks[*cur_loc];
-          drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
+          let flattened = drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
 
           drops.push(1);
 
-          Ok(())
+          self.action_history.push(HistoryAction::MoveAndDropOne { flattened });
         } else {
-          Err(InvalidState)
+          return Err(InvalidState)
         }
       },
       MoveAction::Drop { count } => {
         use MovementInvalidReason::*;
 
-        let return_to_start = 
-          if let MoveState::Movement { cur_loc, carry, drops, .. } = &mut self.move_state {
-            let drop_stack = carry.drop_stones(count).map_err(|_| DropTooLarge)?;
-            let target_stack = &mut self.board.stacks[*cur_loc];
-            drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
+        if let MoveState::Movement { cur_loc, carry, drops, .. } = &mut self.move_state {
+          let drop_stack = carry.drop_stones(count).map_err(|_| DropTooLarge)?;
+          let target_stack = &mut self.board.stacks[*cur_loc];
+          drop_stack.move_onto(target_stack).map_err(|_| ActionInvalidReason::from(DropNotAllowed))?;
 
-            let drops_len = drops.len(); // cache the length since we will need to know it while mutably borrowing `drops`, and `.len()` borrows drops again
-            if drops_len > 0 {
-              drops[drops_len - 1] += count;
-            }
+          if let Some(last) = drops.last_mut() {
+            *last += count;
+          }
 
-            if carry.count() == 0 && drops.len() == 0 {
-              true
-            } else {
-              false
-            }
-          } else {
-            return Err(InvalidState)
-          };
+          self.action_history.push(HistoryAction::Drop { count });
+        } else {
+          return Err(InvalidState)
+        };
+      },
+      MoveAction::Finalise => {
+        match &self.move_state {
+          MoveState::Start => Err(InvalidState),
+          MoveState::Placed { .. } => Ok(()),
+          MoveState::Movement { carry, .. } => if carry.count() == 0 { Ok(()) } else { Err(InvalidState) }
+        }?;
 
-        if return_to_start {
-          self.move_state = MoveState::Start;
-        }
-        Ok(())
+        self.action_history.push(HistoryAction::Finalise { prev_game_state: self.state, prev_move_state: self.move_state.clone() });
+
+        let move_color = self.active_color();
+        self.state = self.evaluate_state(move_color);
+        self.moves += 1;
+        self.move_state = MoveState::Start;
       }
     }
-  }
 
-  pub fn finish_move(&mut self) -> Result<(), ()> { // TODO error type
-    match &self.move_state {
-      MoveState::Start => Err(()),
-      MoveState::Placed { .. } => Ok(()),
-      MoveState::Movement { carry, .. } => if carry.count() == 0 { Ok(()) } else { Err(()) }
-    }?;
-
-    let move_color = self.active_color();
-    self.state = self.evaluate_state(move_color);
-    self.moves += 1;
-    self.move_state = MoveState::Start;
     Ok(())
   }
 
   pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
     let mut game_clone = self.clone();
 
-      // TODO this is very temp
-    fn action_to_move_reason(action_reason: ActionInvalidReason) -> MoveInvalidReason {
-      use ActionInvalidReason::*;
-
-      match action_reason {
-        InvalidState => panic!("make_move tried to do an action on an invalid state"),
-        FirstMoveMustBePlacement => MovementInvalidReason::SpaceEmpty.into(),
-        GameHasEnded => MoveInvalidReason::GameHasEnded,
-        MoveStartOutsideBoard => MovementInvalidReason::StartOutsideBoard.into(), // technically could have been a placement as well
-        MovementDirMismatch => panic!("make_move gave a mismatching direction during a move"),
-        DropTooLarge => panic!("make_move tried to drop more stones than it picked up"),
-        PlacementInvalid(reason) => reason.into(),
-        MovementInvalid(reason) => reason.into(),
-      }
-    }
-
-    match m {
-      Move::Placement { kind, location } => {
-        game_clone.do_action_internal(MoveAction::Place { loc: location, kind: kind }).map_err(|e| action_to_move_reason(e))?;
-      },
-      Move::Movement { start, direction, drops } => {
-        let pickup_count = drops.iter().sum();
-        game_clone.do_action_internal(MoveAction::Pickup { loc: start, count: pickup_count }).map_err(|e| action_to_move_reason(e))?;
-        for drop_count in drops {
-          game_clone.do_action_internal(MoveAction::MoveAndDropOne { dir: direction }).map_err(|e| action_to_move_reason(e))?;
-          game_clone.do_action_internal(MoveAction::Drop { count: drop_count - 1}).map_err(|e| action_to_move_reason(e))?;
+    (|| -> Result<(), ActionInvalidReason> {
+      match m {
+        Move::Placement { kind, location } => {
+          game_clone.do_action_internal(MoveAction::Place { loc: location, kind: kind })?;
+        },
+        Move::Movement { start, direction, drops } => {
+          let pickup_count = drops.iter().sum();
+          game_clone.do_action_internal(MoveAction::Pickup { loc: start, count: pickup_count })?;
+          for drop_count in drops {
+            game_clone.do_action_internal(MoveAction::MoveAndDropOne { dir: direction })?;
+            game_clone.do_action_internal(MoveAction::Drop { count: drop_count - 1 })?;
+          }
         }
       }
-    }
 
-    // If we got here, all actions were okay and were fully applied to the cloned game.
-    let finish_res = game_clone.finish_move();
-    if finish_res.is_err() {
-      panic!("make_move tried to finish an incomplete move");
-    }
+      game_clone.do_action_internal(MoveAction::Finalise)?;
+      Ok(())
+    })()
+      .map_err(|action_reason| { // TODO rethink the action/move reason dichotomy
+        use ActionInvalidReason::*;
+
+        match action_reason {
+          InvalidState => panic!("make_move tried to do an action on an invalid state"),
+          FirstMoveMustBePlacement => MovementInvalidReason::SpaceEmpty.into(),
+          GameHasEnded => MoveInvalidReason::GameHasEnded,
+          MoveStartOutsideBoard => MovementInvalidReason::StartOutsideBoard.into(), // technically could have been a placement as well
+          MovementDirMismatch => panic!("make_move gave a mismatching direction during a move"),
+          DropTooLarge => panic!("make_move tried to drop more stones than it picked up"),
+          PlacementInvalid(reason) => reason.into(),
+          MovementInvalid(reason) => reason.into(),
+        }
+      })?;
 
     // Now write the changes back to ourselves.
     *self = game_clone;
@@ -961,6 +965,10 @@ impl Game {
         GameState::Ongoing
       }
     }
+  }
+
+  pub fn moves(&self) -> u32 {
+    self.moves
   }
 
   pub fn turn(&self) -> u32 {
