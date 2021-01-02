@@ -112,6 +112,18 @@ pub enum Direction {
   Right
 }
 
+impl Direction {
+  pub fn opposite(self) -> Direction {
+    use Direction::*;
+    match self {
+      Up => Down,
+      Down => Up,
+      Left => Right,
+      Right => Left,
+    }
+  }
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Move {
@@ -208,6 +220,10 @@ impl StoneStack {
 
   pub fn top_stone(&self) -> Option<Stone> {
     self.0.last().copied()
+  }
+
+  fn top_stone_mut(&mut self) -> Option<&mut Stone> {
+    self.0.last_mut()
   }
 
   fn bot_stone(&self) -> Option<Stone> {
@@ -921,55 +937,72 @@ impl Game {
       HistoryAction::Place => {
         if let MoveState::Placed { loc, .. } = self.move_state {
           let stack = &mut self.board.stacks[loc];
-          let pickup = stack.take(1).expect(&format!("No stone at {} to pick up while undoing placement.", loc));
+          let pickup = stack.take(1).expect(&format!("Undoing Place / No stone at {} to pick up.", loc));
           let stone = pickup.top_stone().unwrap();
           if !self.held_stones.give_stone(stone) {
-            panic!("Undoing placement of {:?} exceeded the held stones maximum.", stone);
+            panic!("Undoing Place / Returning {:?} exceeded the held stones maximum.", stone);
           }
 
           self.move_state = MoveState::Start;
         } else {
-          panic!("Tried to undo Place action but wasn't in Placed state");
+          panic!("Undoing Place / Not in Placed state.");
         }
       },
       HistoryAction::Pickup => {
         if let MoveState::Movement { cur_loc, carry, .. } = self.move_state.clone() { // TODO see if we really need to clone here (not that it's a huge issue)
           let target_stack = &mut self.board.stacks[cur_loc];
           if let Err(_) = carry.move_onto(target_stack) {
-            panic!("Putting back the carry stack failed while undoing Pickup");
+            panic!("Putting back the carry stack failed while undoing Pickup.");
           }
 
           self.move_state = MoveState::Start;
         } else {
-          panic!("Tried to undo Pickup action but wasn't in Movement state");
+          panic!("Undoing Pickup / Not in Movement state.");
         }
       },
       HistoryAction::MoveAndDropOne { flattened } => {
-        todo!()
+        if let MoveState::Movement { cur_loc, carry, dir, drops, .. } = &mut self.move_state {
+          let pop_res = drops.pop();
+          assert!(pop_res.is_some(), "Undoing MoveAndDropOne / No drop count to pop.");
+          assert!(pop_res.unwrap() == 1, "Undoing MoveAndDropOne / Popped drop count wasn't 1.");
+
+          let target_stack = &mut self.board.stacks[*cur_loc];
+          let pickup = target_stack.take(1).expect(&format!("Undoing MoveAndDropOne / Stack at {} did not have one stone to take.", cur_loc));
+          carry.add_bottom(pickup);
+
+          if flattened {
+            let stone = target_stack.top_stone_mut().expect(&format!("Undoing MoveAndDropOne / No stone at {} to unflatten.", cur_loc));
+            assert_eq!(stone.kind, StoneKind::FlatStone, "Undoing MoveAndDropOne / Stone to unflatten at {} wasn't a flat stone.", cur_loc);
+            stone.kind = StoneKind::StandingStone;
+          }
+
+          let dir_val = dir.expect("Undoing MoveAndDropOne / dir is None.");
+          *cur_loc = cur_loc.move_along(dir_val.opposite(), self.board.size()).expect("Undoing MoveAndDropOne / cur_loc moved outside the board.");
+
+          if drops.len() == 0 {
+            *dir = None;
+          }
+        } else {
+          panic!("Undoing MoveAndDropOne / Not in Movement state.");
+        }
       },
       HistoryAction::Drop { count } => {
         if let MoveState::Movement { cur_loc, carry, drops, .. } = &mut self.move_state {
           let target_stack = &mut self.board.stacks[*cur_loc];
-          let pickup = target_stack.take(count).expect(&format!("Stack at {} did not have {} stones to take.", cur_loc, count));
+          let pickup = target_stack.take(count).expect(&format!("Undoing Drop / Stack at {} did not have {} stones to take.", cur_loc, count));
           carry.add_bottom(pickup);
 
-          let reduced_to_zero = if let Some(last) = drops.last_mut() {
+          if let Some(last) = drops.last_mut() {
             *last -= count;
-            *last == 0
-          } else {
-            false
-          };
-
-          if reduced_to_zero {
-            drops.pop();
           }
-
         } else {
-          panic!("Tried to undo Drop action but wasn't in Movement state");
+          panic!("Undoing Drop / Not in Movement state.");
         }
       },
       HistoryAction::Finalise { prev_game_state, prev_move_state } => {
-        todo!()
+        self.state = prev_game_state;
+        self.moves -= 1;
+        self.move_state = prev_move_state;
       }
     }
 

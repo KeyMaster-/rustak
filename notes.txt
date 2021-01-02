@@ -118,3 +118,6 @@ Movement
 
 Move actions
   . // TODO
+
+Undo
+  . Undo past a finalise
