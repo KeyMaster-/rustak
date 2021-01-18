@@ -46,11 +46,11 @@ x Add bounded integer crate and use it for size and position values
   get mutable stone stack at location, mainly
   Turned out that I didn't need this - since everything is in the same module atm all the code has access to all the struct internals
 
-. Action undo
+x Action undo
 
 ## Cleanup
-. Clean out board's make_move and related unused types/functions
-. Clean up commented-out old code (e.g. old game make_move)
+x Clean out board's make_move and related unused types/functions
+x Clean up commented-out old code (e.g. old game make_move)
 . Sort out the ActionInvalidReason / MoveInvalidReason difference
   Some errors don't make sense for move - keep having separate types + panic on implementation errors?
 . Be consistent about variable naming (loc vs location) and order (loc/kind in MoveState, kind/loc in Move::Placement)
