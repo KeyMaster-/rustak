@@ -499,7 +499,7 @@ impl Board {
     self.stacks.iter().all(|stack| stack.count() != 0)
   }
 
-  fn count_flats_control(&self) -> (u32, u32) {
+  pub fn count_flats_control(&self) -> (u32, u32) {
     self.stacks.iter()
       .filter_map(|stack| stack.top_stone())
       .filter(|stone| stone.kind == StoneKind::FlatStone)
