@@ -124,7 +124,7 @@ impl Direction {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
 pub enum Move {
   Placement { kind: StoneKind, location: Location },
