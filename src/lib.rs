@@ -554,7 +554,7 @@ const MAX_STONE_COUNTS: [HeldStones; 6] = [
   HeldStones { flat: 15, capstone: 0, board_size: BoardSize(4) },
   HeldStones { flat: 21, capstone: 1, board_size: BoardSize(5) },
   HeldStones { flat: 30, capstone: 1, board_size: BoardSize(6) },
-  HeldStones { flat: 40, capstone: 1, board_size: BoardSize(7) },
+  HeldStones { flat: 40, capstone: 2, board_size: BoardSize(7) },
   HeldStones { flat: 50, capstone: 2, board_size: BoardSize(8) },
 ];
 
