@@ -1,3 +1,144 @@
+# Game API requirements
+Re-gathering now that I'm adding history unwind/rewind (this needs other terminology)
+
+# View
+    State that needs to be accessible to display the game
+
+  Board
+    board size
+    stacks on each space
+    Partial move state
+      if placement: active placement location
+      if movement: carried stones over specific location, start location, chosen direction, 
+        To be able to visualise allowable click locations
+
+  Match
+    remaining stones held by each player
+    current active player
+    current turn number
+    history of complete moves
+
+# Interaction
+    Functionality needed for interacting with the game
+
+  Next Move
+    Make move action
+      Try to place
+      Try to pick up
+      Try to drop / move-drop
+      Undo to start state (no action in progress)
+      Undo to a specific point in a movement (when cur_loc == clicked loc)
+
+    History unwind/rewind
+      Jump to state after move N
+        Can use move 0 as "start of game" (blank board), then move 1 is "after white's first move", etc etc
+        Can jump to current state, including partial move action, by jumping to the number of the move in progress
+          e.g. if you're playing black making your first move (move 2 in total), jump to 2 will go to the most progressed state of the board, i.e. including partial moves
+        Any target N beyond move in progress should error
+          As a UX help, even if the current move hasn't been started yet, jumping to it should be allowed.
+          I.e. if white played move 2, black hasn't done anything yet, jump to 2 is allowed, just as if black had started doing their move.
+
+      Crucial note here: Jumping doesn't alter history. Action do/undo does.
+        Should be able to use the same code internally to alter the game state.
+        What matters is whether we push/pop action history
+
+
+Observation: The history of a game defines its state.
+
+# Struct data size analysis
+order + stack alloc size
+pub struct Game { | 200 bytes
+  board: Board | 48
+    stacks: Grid<StoneStack> | 40
+    size: BoardSize | 8
+
+  held_stones: GameHeldStones | 32
+    white: HeldStones | 16
+      board_size: BoardSize | 8
+      flat: u8 | 1
+      capstone: u8 | 1
+      + 6 padding
+
+    black: HeldStones | 16
+      board_size: BoardSize | 8
+      flat: u8 | 1
+      capstone: u8 | 1
+      + 6 padding
+
+  move_state: MoveState | 88 (MoveState::Movement determines sizes as it is bigger)
+    discriminator | 1
+    dir: Option<Direction> | 1
+    + 6 padding
+    start: Location | 16
+    cur_loc: Location | 16
+    carry: StoneStack | 24
+    drops: Vec<usize> | 24
+
+  action_history: Vec<HistoryAction> | 24
+
+  moves: u32 | 4
+
+  state: GameState | 2
+
+  + 2 padding
+}
+
+heap alloc. S is boardsize
+pub struct Game {
+  board: Board
+    stacks: Grid<StoneStack>
+      data | SxS * 24 (size of StoneStack)
+        + _ * 2
+        + _ * 2 Vec reserves
+
+    size: BoardSize
+
+  held_stones: GameHeldStones
+    white: HeldStones
+      board_size: BoardSize
+      flat: u8
+      capstone: u8
+      + 6 padding
+
+    black: HeldStones
+      board_size: BoardSize
+      flat: u8
+      capstone: u8
+      + 6 padding
+
+  move_state: MoveState
+    discriminator
+    dir: Option<Direction>
+    + 6 padding
+    start: Location
+    cur_loc: Location
+    carry: StoneStack
+    drops: Vec<usize>
+
+  action_history: Vec<HistoryAction> | 24
+
+  moves: u32 | 4
+
+  state: GameState | 2
+
+  + 2 padding
+}
+
+5x5 base alloc: 800. 200 stack + 600 heap for the stacks grid
+1, placement move b2: 1192
+  + 384 | 2 * 96 for 2 HistoryActions, + 2 * 96 for 2 reserved by action_history Vec
+  + 8 | 1 * 2 for 1 Stone that was placed, + 3 * 2 for 3 stones reserved by the holding StoneStack
+
+2, placement move c2: 1194
+  2 new history actions, which used up the 2 reserved
+  supposedly 4 reserved stones in the second in-use StoneStack. Would've expected overall count to increase by 8
+
+3, move c2<: 1586
+  + 384, 3 used HistoryActions, one more reserved
+  - 6 (?), c2 stack array went down to 1. Doesn't really match previous reported number though
+  + 8, drops array in Drop HistoryAction (I'm guessing)
+
+
 # Structure
 x need a utility parsing function file to include in parse.rs and in tests.rs
 x Allow StoneStack to be empty, get rid of boardspace etc as a result.

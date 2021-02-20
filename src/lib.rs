@@ -6,10 +6,14 @@ use bounded_integer::bounded_integer;
 #[cfg(feature = "serde_support")]
 use serde::{Serialize, Deserialize};
 
+#[cfg(feature = "measure_game_size")]
+use deepsize::{DeepSizeOf, Context};
+
 pub mod parse;
 
 bounded_integer! {
   #[repr(usize)]
+  #[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
   pub struct BoardSize { 3..=8 }
 }
 
@@ -26,6 +30,7 @@ pub fn file_idx_to_char(idx: usize) -> Option<char> {
 // note that x and y are 0-indexed, while ranks are 1-indexed
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub struct Location {
   x: usize,
   y: usize
@@ -73,6 +78,7 @@ impl Location {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub enum StoneKind {
   FlatStone,
   StandingStone,
@@ -105,6 +111,7 @@ impl StoneKind {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub enum Direction {
   Up,
   Down,
@@ -133,6 +140,7 @@ pub enum Move {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub enum Color {
   White,
   Black
@@ -153,6 +161,7 @@ impl Color {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub struct Stone {
   pub kind: StoneKind,
   pub color: Color
@@ -175,6 +184,7 @@ impl Stone {
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub struct StoneStack(Vec<Stone>);
 
 #[derive(Error, Debug)]
@@ -269,6 +279,17 @@ pub struct Board {
   stacks: Grid<StoneStack>,
   size: BoardSize
 }
+
+#[cfg(feature = "measure_game_size")]
+impl DeepSizeOf for Board {
+    // Returns the size of all heap allocations of this type
+    // The only heap allocation we have in this type is the `Vec` inside the `stacks` `Grid`.
+    // Everything else is usize values (grid rows/cols, `size` `BoardSize` value) that are allocated in this struct itself.
+  fn deep_size_of_children(&self, context: &mut Context) -> usize {
+    self.stacks.flatten().deep_size_of_children(context)
+  }
+}
+
 
 // Doing an impl on board instead of Grid since Grid would equire a newtype
 // Also, we want to omit the board size anyway, and check the provided sequence
@@ -542,6 +563,7 @@ impl Sides {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub struct HeldStones {
   flat: u8,
   capstone: u8,
@@ -633,6 +655,7 @@ impl HeldStones {
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub struct GameHeldStones {
   white: HeldStones,
   black: HeldStones
@@ -681,6 +704,7 @@ impl GameHeldStones {
 // The state of a game
 #[derive(Debug, Eq, PartialEq, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub struct Game {
   board: Board,
   held_stones: GameHeldStones,
@@ -700,6 +724,7 @@ pub enum GameFromDataError {
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub enum WinKind {
   Road,
   BoardFilled,
@@ -708,6 +733,7 @@ pub enum WinKind {
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub enum GameState {
   Ongoing,
   Win(Color, WinKind),
@@ -716,6 +742,7 @@ pub enum GameState {
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 pub enum MoveState {
   Start,
   Placed { loc: Location, kind: StoneKind },
@@ -763,6 +790,7 @@ pub enum ActionInvalidReason {
 // MoveState at the time, the action can be undone
 #[derive(Debug, Eq, PartialEq, Clone)]
 #[cfg_attr(feature = "serde_support", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "measure_game_size", derive(DeepSizeOf))]
 enum HistoryAction {
   Place,
   Pickup,
@@ -1105,7 +1133,6 @@ impl Game {
   pub fn held_stones(&self) -> GameHeldStones {
     self.held_stones
   }
-
 }
 
 impl MoveState {
