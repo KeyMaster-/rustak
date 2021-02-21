@@ -1140,7 +1140,8 @@ impl MoveState {
   }
 }
 
-struct MoveHistory {
+#[derive(Debug, Clone)]
+pub struct MoveHistory {
   moves: Vec<Move>,
     // array of game states after each move. Is 1 longer than `moves` because it has the starting game state at idx 0.
     // TODO investigate wether we want to trade off memory usage with CPU
@@ -1159,7 +1160,7 @@ impl MoveHistory {
   pub fn from_moves(moves: Vec<Move>, size: BoardSize) -> Result<Self, (usize, MoveInvalidReason)> {
     let states = moves.iter().cloned().enumerate().fold(Ok(vec![Game::new(size)]), |res, (idx, m)| -> Result<Vec<Game>, (usize, MoveInvalidReason)> {
       if let Ok(mut states) = res {
-        let mut game = states.last().map(|game| game.clone()).unwrap();
+        let mut game = states.last().unwrap().clone();
         let move_res = game.make_move(m);
 
         match move_res {
@@ -1186,9 +1187,38 @@ impl MoveHistory {
     &self.moves
   }
 
-    // Gets the state of the game after move <idx>
-  pub fn get_state(&self, idx: usize) -> Game {
-    self.states[idx].clone()
+  pub fn size(&self) -> BoardSize {
+    self.states[0].board().size()
+  }
+
+    // Gets the state of the game after move <move_idx>
+    // Moves are numbered 1..=moves().len()
+    // Giving an access outside that range will panic
+  pub fn state(&self, move_idx: usize) -> Game {
+    self.states[move_idx].clone()
+  }
+
+  pub fn last(&self) -> Game {
+    self.states.last().unwrap().clone()
+  }
+
+  pub fn add(&mut self, m: Move) -> Result<(), MoveInvalidReason> {
+    let mut game = self.states.last().unwrap().clone();
+    game.make_move(m.clone())?;
+
+    self.moves.push(m);
+    self.states.push(game);
+    Ok(())
+  }
+
+  pub fn undo(&mut self) -> bool {
+    if self.moves.len() > 0 {
+      self.moves.pop();
+      self.states.pop();
+      true
+    } else {
+      false
+    }
   }
 }
 
