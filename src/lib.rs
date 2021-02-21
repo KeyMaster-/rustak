@@ -756,7 +756,6 @@ pub enum MoveAction {
   Pickup { loc: Location, count: usize },
   MoveAndDropOne { dir: Direction },
   Drop { count: usize },
-  Finalise,
 }
 
 #[derive(Error, Debug, Eq, PartialEq)]
@@ -796,7 +795,6 @@ enum HistoryAction {
   Pickup,
   MoveAndDropOne { flattened: bool },
   Drop { count: usize },
-  Finalise { prev_game_state: GameState, prev_move_state: MoveState }
 }
 
 impl Game {
@@ -936,20 +934,6 @@ impl Game {
         } else {
           return Err(InvalidState)
         };
-      },
-      MoveAction::Finalise => {
-        match &self.move_state {
-          MoveState::Start => Err(InvalidState),
-          MoveState::Placed { .. } => Ok(()),
-          MoveState::Movement { carry, .. } => if carry.count() == 0 { Ok(()) } else { Err(InvalidState) }
-        }?;
-
-        self.action_history.push(HistoryAction::Finalise { prev_game_state: self.state, prev_move_state: self.move_state.clone() });
-
-        let move_color = self.active_color();
-        self.state = self.evaluate_state(move_color);
-        self.moves += 1;
-        self.move_state = MoveState::Start;
       }
     }
 
@@ -1026,15 +1010,20 @@ impl Game {
         } else {
           panic!("Undoing Drop / Not in Movement state.");
         }
-      },
-      HistoryAction::Finalise { prev_game_state, prev_move_state } => {
-        self.state = prev_game_state;
-        self.moves -= 1;
-        self.move_state = prev_move_state;
       }
     }
 
     true
+  }
+
+  pub fn finalise_move(&mut self) -> Option<Move> {
+    let m = self.move_state.clone().to_move()?; // TODO consider some sort of internal swap api on MoveState (i.e. either returns move and sets itself to ::Start, or stays as is and returns None if not a valid move)
+
+    let move_color = self.active_color();
+    self.state = self.evaluate_state(move_color);
+    self.moves += 1;
+    self.move_state = MoveState::Start;
+    Some(m)
   }
 
   pub fn make_move(&mut self, m: Move) -> Result<GameState, MoveInvalidReason> {
@@ -1055,7 +1044,7 @@ impl Game {
         }
       }
 
-      game_clone.do_action_internal(MoveAction::Finalise)?;
+      game_clone.finalise_move().ok_or(ActionInvalidReason::InvalidState)?;
       Ok(())
     })()
       .map_err(|action_reason| { // TODO rethink the action/move reason dichotomy
@@ -1148,6 +1137,58 @@ impl MoveState {
         }
       },
     }
+  }
+}
+
+struct MoveHistory {
+  moves: Vec<Move>,
+    // array of game states after each move. Is 1 longer than `moves` because it has the starting game state at idx 0.
+    // TODO investigate wether we want to trade off memory usage with CPU
+    // by only storing some states, and calculating intermediate states by applying moves forward
+  states: Vec<Game> 
+}
+
+impl MoveHistory {
+  pub fn new(size: BoardSize) -> Self {
+    Self {
+      moves: vec![],
+      states: vec![Game::new(size)]
+    }
+  }
+
+  pub fn from_moves(moves: Vec<Move>, size: BoardSize) -> Result<Self, (usize, MoveInvalidReason)> {
+    let states = moves.iter().cloned().enumerate().fold(Ok(vec![Game::new(size)]), |res, (idx, m)| -> Result<Vec<Game>, (usize, MoveInvalidReason)> {
+      if let Ok(mut states) = res {
+        let mut game = states.last().map(|game| game.clone()).unwrap();
+        let move_res = game.make_move(m);
+
+        match move_res {
+          Ok(_) => {
+            states.push(game);
+            Ok(states)
+          },
+          Err(reason) => {
+            Err((idx, reason))
+          }
+        }
+      } else {
+        res
+      }
+    })?;
+
+    Ok(Self {
+      moves,
+      states
+    })
+  }
+
+  pub fn moves(&self) -> &[Move] {
+    &self.moves
+  }
+
+    // Gets the state of the game after move <idx>
+  pub fn get_state(&self, idx: usize) -> Game {
+    self.states[idx].clone()
   }
 }
 

@@ -42,8 +42,42 @@ Re-gathering now that I'm adding history unwind/rewind (this needs other termino
         Should be able to use the same code internally to alter the game state.
         What matters is whether we push/pop action history
 
-
 Observation: The history of a game defines its state.
+
+
+History {
+  get_state(move: usize) -> Option<GameState>
+    move 0 -> empty game
+    move 1 -> after first move
+    if 1 move done so far:
+    move 2 -> same as move 1 if no move 2 in progress, else game with partial move state
+    beyond that -> None
+
+
+}
+
+GameState {
+  board
+  held_stones
+  moves // needs rename
+  state // needs rename
+  move_state // maybe needs rename
+
+  do_action(move action)
+    alter board/held_stones and move_state
+
+  finalise_move() -> Option<Move>
+    tick over moves, re-eval game state, turn move_state into mvoe and reset to Start (can be &mut self function on MoveState)
+
+  undo()
+    alter board/held_stones and move_state
+    I think if this is only in the scope of a single partial move, undo can operate just based on the data in the current MoveState
+      Would need to add a flatten flag to Movement. Seems worth it vs a HistoryAction list though
+    Only undoes this partial move, not past a move boundary
+
+  make_move(Move)
+    executes a move in terms of internal do_action calls
+}
 
 # Struct data size analysis
 order + stack alloc size
@@ -72,7 +106,7 @@ pub struct Game { | 200 bytes
     start: Location | 16
     cur_loc: Location | 16
     carry: StoneStack | 24
-    drops: Vec<usize> | 24
+    drops: Vec<usize> | 24 // if drops were u8, this could be 8 bytes total (you can do 8 drops at most)
 
   action_history: Vec<HistoryAction> | 24
 
@@ -116,6 +150,7 @@ pub struct Game {
     drops: Vec<usize>
 
   action_history: Vec<HistoryAction> | 24
+    96 * count + reserved
 
   moves: u32 | 4
 
