@@ -55,7 +55,7 @@ impl Location {
     }
   }
 
-  fn touching_sides(&self, board_size: BoardSize) -> Sides {
+  pub fn touching_sides(&self, board_size: BoardSize) -> Sides {
     Sides::new(self.x == 0, self.y == board_size.get() - 1, self.x == board_size.get() - 1, self.y == 0)
   }
 
@@ -449,8 +449,12 @@ pub enum MovementInvalidReason {
 }
 
 impl Board {
-  fn loc_inside(&self, loc: &Location)->bool {
+  fn loc_inside(&self, loc: &Location) -> bool {
     loc.x < self.size.get() && loc.y < self.size.get()
+  }
+
+  pub fn road_control_at(&self, loc: Location) -> Option<Color> {
+    self.stacks[loc].top_stone().and_then(|stone| stone.kind.counts_for_road().then(|| stone.color))
   }
 
   fn check_road_win(&self, last_move_color: Color) -> Option<Color> {
@@ -462,13 +466,9 @@ impl Board {
       }
     }
 
-    let road_stone_at_loc = |loc: Location| -> Option<Stone> {
-      (&self.stacks[loc]).top_stone().and_then(|stone| if stone.kind.counts_for_road() { Some(stone) } else { None } )
-    };
-
     let mut components: Vec<(Color, Sides)> = Vec::new();
     while let Some(loc) = board_locs_to_process.pop() {
-      let component_color = if let Some(stone) = road_stone_at_loc(loc) { stone.color } else { continue; };
+      let component_color = if let Some(color) = self.road_control_at(loc) { color } else { continue; };
 
       let mut component_touched_sides = Sides::none();
       let mut component_locs_to_process = vec![loc];
@@ -478,7 +478,7 @@ impl Board {
         component_touched_sides.add(&touching);
 
         for neighbour in loc.neighbours(self.size) {
-          let neighbour_color = if let Some(stone) = road_stone_at_loc(neighbour) { stone.color } else { continue; };
+          let neighbour_color = if let Some(color) = self.road_control_at(neighbour) { color } else { continue; };
           if neighbour_color != component_color { continue; }
 
           // the neighbour counts for roads, and is of the same color, so it belongs to this component.
@@ -532,7 +532,7 @@ impl Board {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct Sides {
+pub struct Sides {
   left: bool,
   top: bool,
   right: bool,
@@ -557,6 +557,15 @@ impl Sides {
     self.top   |= other.top;
     self.right |= other.right;
     self.bot   |= other.bot;
+  }
+
+  pub fn dirs(&self) -> Vec<Direction> {
+    let mut dirs = vec![];
+    if self.left  { dirs.push(Direction::Left);  };
+    if self.top   { dirs.push(Direction::Up);    };
+    if self.right { dirs.push(Direction::Right); };
+    if self.bot   { dirs.push(Direction::Down);  };
+    dirs
   }
 }
 
