@@ -74,6 +74,13 @@ impl Location {
 
   pub fn x(&self) -> usize { self.x }
   pub fn y(&self) -> usize { self.y }
+
+}
+
+impl PartialEq<(usize, usize)> for Location {
+  fn eq(&self, other: &(usize, usize)) -> bool {
+    self.x == other.0 && self.y == other.1
+  }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
